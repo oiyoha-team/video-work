@@ -154,6 +154,32 @@ else
   ok "API 키가 이미 설정되어 있습니다"
 fi
 
+# 워크스페이스에 묶이지 않은 키(sk-ant-usr-…)는 워크스페이스 ID도 있어야 동작한다
+if grep -qE '^ANTHROPIC_API_KEY=sk-ant-usr-' "$ROOT/.env" && ! grep -qE '^ANTHROPIC_WORKSPACE_ID=wrkspc_' "$ROOT/.env"; then
+  if [ "$AUTO" != "--auto" ]; then
+    echo "  이 API 키는 워크스페이스 ID(wrkspc_ 로 시작)가 함께 있어야 합니다."
+    read -r -p "  워크스페이스 ID: " WS
+    if [ -n "$WS" ]; then
+      WS="$WS" "$VPY" - "$ROOT/.env" <<'PYEOF'
+import os, re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+line = "ANTHROPIC_WORKSPACE_ID=" + os.environ["WS"].strip()
+if re.search(r"(?m)^ANTHROPIC_WORKSPACE_ID=", text):
+    text = re.sub(r"(?m)^ANTHROPIC_WORKSPACE_ID=.*$", line, text)
+else:
+    text = text.rstrip() + "\n" + line + "\n"
+open(path, "w", encoding="utf-8").write(text)
+PYEOF
+      ok "워크스페이스 ID 저장됨"
+    else
+      warn "워크스페이스 ID가 없으면 Claude 기능이 동작하지 않습니다. 나중에 .env의 ANTHROPIC_WORKSPACE_ID에 넣어 주세요."
+    fi
+  else
+    warn "워크스페이스 ID가 비어 있습니다."
+  fi
+fi
+
 # ── 6. 음성 인식 모델 ──
 step 6 "음성 인식 모델 준비"
 MODEL=$(grep -E '^WHISPER_MODEL=' "$ROOT/.env" | cut -d= -f2 | tr -d '[:space:]')

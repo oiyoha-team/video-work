@@ -192,6 +192,27 @@ if ($envText -match '(?m)^ANTHROPIC_API_KEY=\s*$') {
     Ok "API 키가 이미 설정되어 있습니다"
 }
 
+# 워크스페이스에 묶이지 않은 키(sk-ant-usr-…)는 워크스페이스 ID도 있어야 동작한다
+if ($envText -match '(?m)^ANTHROPIC_API_KEY=sk-ant-usr-' -and $envText -notmatch '(?m)^ANTHROPIC_WORKSPACE_ID=wrkspc_') {
+    if (-not $Auto) {
+        Write-Host "  이 API 키는 워크스페이스 ID(wrkspc_ 로 시작)가 함께 있어야 합니다."
+        $ws = (Read-Host "  워크스페이스 ID").Trim()
+        if ($ws) {
+            if ($envText -match '(?m)^ANTHROPIC_WORKSPACE_ID=') {
+                $envText = $envText -replace '(?m)^ANTHROPIC_WORKSPACE_ID=.*$', "ANTHROPIC_WORKSPACE_ID=$ws"
+            } else {
+                $envText = $envText.TrimEnd() + "`nANTHROPIC_WORKSPACE_ID=$ws`n"
+            }
+            [IO.File]::WriteAllText($EnvFile, $envText, (New-Object Text.UTF8Encoding $false))
+            Ok "워크스페이스 ID 저장됨"
+        } else {
+            Warn "워크스페이스 ID가 없으면 Claude 기능이 동작하지 않습니다. 나중에 .env의 ANTHROPIC_WORKSPACE_ID에 넣어 주세요."
+        }
+    } else {
+        Warn "워크스페이스 ID가 비어 있습니다."
+    }
+}
+
 # ── 6. 음성 인식 모델 ─────────────────────────────────────────────
 Step 6 "음성 인식 모델 준비"
 $model = 'small'
