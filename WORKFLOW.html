@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>영상 자동화 워크플로우</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+<style>
+  :root {
+    --bg: #f5f6f4; --surface: #fff; --surface-2: #f0f2ee; --border: #dfe3db;
+    --text: #1c211b; --muted: #687064;
+    --plan: #2f8f4e; --plan-soft: #e5f3e9;
+    --visual: #4f6bd8; --visual-soft: #e8ecfb;
+    --sound: #c0579a; --sound-soft: #f9e8f2;
+    --compose: #8a5cd1; --compose-soft: #f0e9fb;
+    --gate: #e8833a; --gate-soft: #fff1e4;
+    --done: #2f8f4e; --mock: #b8860b; --todo: #8b938a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121512; --surface: #1a1e1a; --surface-2: #232823; --border: #313831;
+      --text: #e6ebe4; --muted: #9aa397;
+      --plan-soft: #1d3324; --visual-soft: #1d2440; --sound-soft: #3a1d30; --compose-soft: #2a1f3d; --gate-soft: #3a2716;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 Pretendard, -apple-system, "Malgun Gothic", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 48px 0 14px; display: flex; align-items: center; gap: 10px; }
+  h2 .num { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--text); color: var(--bg); font-size: 13px; }
+  .lead { color: var(--muted); margin: 0 0 20px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+  /* 모듈 */
+  .module { border-radius: 14px; padding: 18px; border: 1.5px solid; position: relative; }
+  .module-title { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 800; font-size: 15px; }
+  .tag { font-size: 11px; font-weight: 800; color: #fff; padding: 2px 8px; border-radius: 5px; }
+  .plan { background: var(--plan-soft); border-color: var(--plan); }
+  .plan .tag { background: var(--plan); }
+  .visual { background: var(--visual-soft); border-color: var(--visual); }
+  .visual .tag { background: var(--visual); }
+  .sound { background: var(--sound-soft); border-color: var(--sound); }
+  .sound .tag { background: var(--sound); }
+  .compose { background: var(--compose-soft); border-color: var(--compose); }
+  .compose .tag { background: var(--compose); }
+
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; row-gap: 12px; }
+  .node {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; min-width: 150px; flex: 1 1 150px; position: relative;
+  }
+  .node b { display: block; font-size: 14px; }
+  .node .step { font-size: 11px; font-weight: 700; color: var(--muted); }
+  .node ul { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted); }
+  .node .out { margin-top: 8px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; color: var(--text); background: var(--surface-2); padding: 2px 6px; border-radius: 4px; display: inline-block; }
+  .status { position: absolute; top: 9px; right: 9px; width: 8px; height: 8px; border-radius: 50%; }
+  .s-done { background: var(--done); } .s-mock { background: var(--mock); } .s-todo { background: var(--todo); }
+
+  .arrow { display: grid; place-items: center; width: 26px; flex: 0 0 26px; color: var(--muted); font-size: 18px; }
+  .gate {
+    flex: 0 0 auto; align-self: center; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 0 4px; font-size: 10px; font-weight: 700; color: var(--gate);
+  }
+  .gate i {
+    width: 30px; height: 30px; transform: rotate(45deg); border: 2px solid var(--gate); background: var(--gate-soft);
+    border-radius: 5px; display: grid; place-items: center; font-style: normal;
+  }
+  .gate i span { transform: rotate(-45deg); font-size: 12px; }
+
+  .handoff { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 10px 0; color: var(--muted); font-size: 13px; }
+  .handoff code { background: var(--surface); border: 1px solid var(--border); padding: 4px 10px; border-radius: 6px; color: var(--text); font-weight: 700; }
+  .handoff .line { width: 2px; height: 26px; background: var(--border); }
+  .vstack { display: flex; flex-direction: column; align-items: center; }
+
+  .parallel { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: stretch; }
+  .par-label { writing-mode: vertical-rl; display: grid; place-items: center; font-size: 11px; font-weight: 800; letter-spacing: 3px; color: var(--muted); border-left: 2px dashed var(--border); padding-left: 2px; }
+
+  /* 승인 루프 */
+  .loop { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .loop .node { min-width: 0; }
+  .loop .node.gate-node { border-color: var(--gate); background: var(--gate-soft); }
+  .branches { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .branch { border-radius: 10px; padding: 12px 14px; border: 1px solid var(--border); background: var(--surface); }
+  .branch.go { border-left: 4px solid var(--plan); }
+  .branch.fix { border-left: 4px solid var(--gate); }
+  .remote { margin-top: 14px; background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 14px 16px; font-size: 13px; }
+  .remote .path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+  .remote .path span { background: var(--surface-2); padding: 3px 9px; border-radius: 6px; font-weight: 600; }
+  .remote .path em { font-style: normal; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 13px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-size: 12px; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  td code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .table-wrap { overflow-x: auto; }
+
+  .os { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .os .node { min-width: 0; }
+
+  @media (max-width: 760px) {
+    .flow { flex-direction: column; }
+    .arrow { transform: rotate(90deg); width: 100%; height: 22px; flex-basis: 22px; }
+    .gate { flex-direction: row; gap: 8px; padding: 4px 0; }
+    .parallel { grid-template-columns: 1fr; }
+    .par-label { writing-mode: horizontal-tb; border-left: none; border-top: 2px dashed var(--border); padding: 4px 0 0; }
+    .loop, .branches, .os { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>오이요하 퍼포먼스 영상 자동화 · 워크플로우</h1>
+  <p class="lead">레퍼런스 영상 한 편에서 시작해 자사 제품 광고 영상이 나오기까지의 전체 흐름입니다. 마름모(◆)는 사람이 [진행] 또는 [수정]을 고르는 승인 지점이며, 앱 화면과 Flow 메신저 어디서든 응답할 수 있습니다.</p>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--done)"></i>구현 완료</span>
+    <span><i class="dot" style="background:var(--mock)"></i>화면·흐름 완성, 임시 엔진(mock)으로 동작 — 실제 AI 엔진 연결 예정</span>
+    <span><i class="dot" style="background:var(--todo)"></i>예정</span>
+    <span><i class="dot" style="background:var(--gate)"></i>승인 게이트 (앱 알림 + Flow)</span>
+  </div>
+
+  <h2><span class="num">1</span>전체 흐름</h2>
+
+  <section class="module plan">
+    <div class="module-title"><span class="tag">1</span>기획 자동화</div>
+    <div class="flow">
+      <div class="node"><i class="status s-done"></i><span class="step">STEP 1</span><b>레퍼런스 분석</b>
+        <ul><li>3분 이하 영상 업로드</li><li>2초 구간 프레임 + 음성 인식</li><li>대사·장면만 분석 (자막 X)</li><li>대사는 문장 단위 (. ? !)</li><li>장면 분석 → scene_analysis/ 별도 저장</li><li>동일 대사만 병합</li><li>장면·자막·말투·페르소나</li></ul>
+        <span class="out">analysis.json</span></div>
+      <div class="gate"><i><span>◆</span></i>확인</div>
+      <div class="node"><i class="status s-done"></i><span class="step">STEP 2</span><b>제품 정보</b>
+        <ul><li>수기 입력 / md 파일</li><li>저장된 제품 불러오기</li><li>연출컷 · 누끼컷</li></ul>
+        <span class="out">product.json</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><i class="status s-done"></i><span class="step">STEP 3</span><b>스크립트 작성</b>
+        <ul><li>대사 스크립트만 작성</li><li>레퍼런스 문장 ↔ 자사 문장 1:1</li><li>직접 수정</li><li>Claude 대화로 수정</li></ul>
+        <span class="out">script.json (draft)</span></div>
+      <div class="gate"><i><span>◆</span></i>확정</div>
+      <div class="node"><i class="status s-done"></i><span class="step">STEP 4</span><b>기획 확정</b>
+        <ul><li>TXT 저장 · 전체 복사</li><li>영상 제작으로 넘기기</li></ul>
+        <span class="out">script.json (final)</span></div>
+    </div>
+  </section>
+
+  <div class="handoff vstack"><div class="line"></div><code>script.json</code><span>장면별 대사 · 자막 · 이미지 프롬프트 · 제품컷 · 움직임 · 목소리 설정</span><div class="line"></div></div>
+
+  <div class="parallel">
+    <section class="module visual">
+      <div class="module-title"><span class="tag">2-A</span>비주얼 <span style="font-weight:500;color:var(--muted);font-size:12px">STEP 5</span></div>
+      <div class="flow">
+        <div class="node"><i class="status s-mock"></i><b>장면 이미지 생성</b>
+          <ul><li>장면 브리프 = 장면 분석 + 자사 대사</li><li>제품 연출컷·누끼컷 = 참고 자료</li><li>비율 1:1 · 4:5 · 16:9 · 9:16</li></ul>
+          <span class="out">visual/s01.jpg</span></div>
+        <div class="gate"><i><span>◆</span></i>검수</div>
+        <div class="node"><i class="status s-mock"></i><b>영상화</b>
+          <ul><li>이미지 → 장면 길이 클립</li><li>카메라 움직임 반영</li></ul>
+          <span class="out">visual/s01.mp4</span></div>
+      </div>
+    </section>
+    <div class="par-label">동시 진행</div>
+    <section class="module sound">
+      <div class="module-title"><span class="tag">2-B</span>사운드 <span style="font-weight:500;color:var(--muted);font-size:12px">STEP 5</span></div>
+      <div class="flow">
+        <div class="node"><i class="status s-mock"></i><b>대사 음성 생성 (TTS)</b>
+          <ul><li>자사 스크립트 문장 → 일레븐랩스·타입캐스트 (연동 예정)</li><li>문장 하나 = 음성 파일 하나</li><li>화자 페르소나·말투·속도 반영</li><li>장면 길이 초과 경고</li></ul>
+          <span class="out">sound/s01_1.wav</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="handoff vstack"><div class="line"></div>
+    <div class="gate" style="flex-direction:row;gap:8px"><i><span>◆</span></i>클립·음성 모두 준비되면 제작 확정</div>
+  <div class="line"></div></div>
+
+  <section class="module compose">
+    <div class="module-title"><span class="tag">3</span>결과물 다운로드 <span style="font-weight:500;color:var(--muted);font-size:12px">STEP 6</span></div>
+    <div class="flow">
+      <div class="node"><i class="status s-done"></i><b>전체 묶음 / 선택 다운로드</b>
+        <ul><li>전체 ZIP, 묶음별 ZIP, 골라서 ZIP</li><li>파일 하나씩 받기</li></ul>
+        <span class="out">영상클립/ · 음성/ · 이미지/</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><i class="status s-done"></i><b>편집용 자료</b>
+        <ul><li>timeline.csv (장면·시간·파일)</li><li>subtitles.srt · script.txt</li></ul>
+        <span class="out">export/</span></div>
+      <div class="arrow">→</div>
+      <div class="node" style="border-style:dashed"><b>사용자가 직접 편집</b>
+        <ul><li>편집 툴에서 scene01~ 순서대로 배치</li><li>음성·자막 얹고 마무리</li></ul></div>
+    </div>
+  </section>
+
+  <h2><span class="num">2</span>승인 루프 — 자리에 없어도 Flow로 원격 조정</h2>
+  <div class="loop">
+    <div class="node"><b>1. 자동 단계 완료</b><ul><li>분석, 스크립트, 이미지, 클립·음성</li></ul></div>
+    <div class="node gate-node"><b>2. 승인 요청 생성</b><ul><li>6자리 코드 발급</li><li>요약 + 화면 링크</li></ul></div>
+    <div class="node"><b>3. 알림 발송</b><ul><li>앱 상단 🔔 알림 센터</li><li>Flow 메신저 <span style="color:var(--todo)">(연동 예정)</span></li></ul></div>
+    <div class="node"><b>4. 사람이 응답</b><ul><li>앱: [진행] / [수정]</li><li>Flow: 「진행 a1b2c3」 /<br>「수정 a1b2c3 내용」</li></ul></div>
+    <div class="node"><b>5. 같은 동작 실행</b><ul><li>어디서 눌러도<br>workflow.resolve_gate()</li></ul></div>
+  </div>
+  <div class="branches">
+    <div class="branch go"><b>▶ 진행</b> — 다음 단계가 자동으로 시작됩니다. 예) 스크립트 승인 → 기획 확정, 이미지 승인 → 영상화 시작, 클립·음성 승인 → 제작 확정 · 다운로드</div>
+    <div class="branch fix"><b>✎ 수정</b> — 코멘트가 해당 단계 화면에 표시됩니다. <b>스크립트</b>는 Claude가 코멘트를 반영해 수정본을 만들고 다시 승인을 요청합니다 (API 키 연결 시).</div>
+  </div>
+  <div class="remote">
+    <b>원격 응답 경로</b>
+    <div class="path"><span>Flow 메신저</span><em>→</em><span>POST /api/flow/webhook</span><em>→</em><span>게이트 처리</span><em>→</em><span>다음 단계 자동 실행</span></div>
+    <span style="color:var(--muted)">이 PC의 서버가 외부에서 보이지 않으므로 Flow 기능에 따라 둘 중 하나로 연결합니다: (A) Flow가 버튼 응답을 웹훅으로 보내주면 → 터널 주소(PUBLIC_BASE_URL)로 수신 / (B) 웹훅이 없으면 → 서버가 Flow 채팅방 답장을 주기적으로 읽어 처리. 웹훅 입구와 답장 해석기는 이미 구현되어 있고, Flow API 전송 부분만 남아 있습니다.</span>
+  </div>
+
+  <h2><span class="num">3</span>단계별 데이터</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>단계</th><th>입력</th><th>산출물 (data/projects/{id}/)</th><th>코드</th><th>승인 게이트</th><th>상태</th></tr></thead>
+    <tbody>
+      <tr><td>1 레퍼런스 분석</td><td>영상 (≤3분)</td><td><code>reference/analysis.json</code>, <code>frames/</code></td><td><code>planning/analyze.py</code></td><td>analysis</td><td>✅ (Claude 키 연결 시 장면 분석)</td></tr>
+      <tr><td>2 제품 정보</td><td>입력 / md / 라이브러리</td><td><code>product/product.json</code></td><td><code>planning/products.py</code></td><td>—</td><td>✅</td></tr>
+      <tr><td>3 스크립트</td><td>분석 + 제품</td><td><code>script.json</code>, <code>chat.json</code></td><td><code>planning/script_writer.py</code></td><td>script</td><td>✅ (Claude 키 연결 시 생성)</td></tr>
+      <tr><td>4 기획 확정</td><td>script.json</td><td><code>script.txt</code></td><td><code>workflow.py</code></td><td>—</td><td>✅</td></tr>
+      <tr><td>5-A 비주얼</td><td>script.json + 제품컷</td><td><code>visual/*.jpg</code>, <code>visual/*.mp4</code></td><td><code>visual/engine.py</code></td><td>images</td><td>🟡 mock 엔진</td></tr>
+      <tr><td>5-B 사운드</td><td>script.json (대사·목소리)</td><td><code>sound/*.wav</code></td><td><code>sound/engine.py</code></td><td>production</td><td>🟡 OS 기본 음성</td></tr>
+      <tr><td>6 결과물 다운로드</td><td>클립 + 음성 + 이미지</td><td><code>export/</code> (timeline.csv, subtitles.srt …), ZIP</td><td><code>export.py</code></td><td>—</td><td>✅</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2><span class="num">4</span>설치 · 실행 (OS 자동 판별)</h2>
+  <div class="os">
+    <div class="node"><b>Windows</b><ul><li><code>1_설치하기.bat</code> → winget으로 Python · Node.js · VC++ 런타임 자동 설치</li><li><code>2_실행하기.bat</code> → 서버 + 브라우저</li><li>Mac용 파일을 실수로 실행해도 자동으로 Windows 방식으로 전환</li></ul></div>
+    <div class="node"><b>macOS</b><ul><li><code>1_설치하기.command</code> → Homebrew로 Python · Node.js 자동 설치 (Apple Silicon / Intel 자동 인식)</li><li><code>2_실행하기.command</code> → 서버 + 브라우저</li><li>시스템 음성(say), 실행 파일 이름 등 앱 내부도 Mac 방식으로 동작</li></ul></div>
+  </div>
+</main>
+</body>
+</html>

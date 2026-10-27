@@ -1,0 +1,29 @@
+# 비밀 키
+.env
+
+# 개인 작업 데이터 (기획안·제품 라이브러리·업로드 영상)
+data/projects/*
+data/products/*
+!data/projects/.gitkeep
+!data/products/.gitkeep
+
+# 환경
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+frontend/dist/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 자격증명 메모 (절대 커밋 금지)
+자격증명모음*.txt
+*credential*.txt
+
+# 빌드 캐시
+*.tsbuildinfo
