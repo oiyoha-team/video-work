@@ -1,16 +1,26 @@
-"""②-A 비주얼 파이프라인: 장면 브리프 → 장면 이미지 → 장면 클립.
+"""②-A 비주얼 파이프라인: 장면 브리프 → 장면 이미지 → (사람이 승인) → 장면 클립.
 
 장면 브리프는 레퍼런스 장면 분석 + 자사 대사 + 제품 이미지로 이 단계에서 만든다 (briefs.py).
+마음에 안 드는 장면만 다시 만든 뒤 [이미지 전체 승인]하면 영상화한다. 영상도 장면을 골라 그 장면만 다시 만들 수 있다.
 """
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import config
 import gates
 from planning import store
 from schemas import JobState, Script, VisualAsset
 
 from .briefs import build_briefs, product_images, reference_for
-from .engine import SceneContext, get_engine
+from .engine import VIDEO_MODELS, SceneContext, get_engine
+
+PARALLEL = 3  # 동시에 생성할 장면 수 (힉스필드 계정 동시 처리 한도 안에서)
+
+
+def video_model(project_id: str) -> str:
+    chosen = store.get_production(project_id).visual.video_model
+    return chosen if chosen in VIDEO_MODELS else config.HIGGSFIELD_VIDEO_MODEL
 
 
 def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
@@ -25,17 +35,39 @@ def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
         product_images=product_images(project_id),
         prompt=asset.prompt,
         motion=asset.motion,
+        video_model=video_model(project_id),
     )
 
 
-def save_briefs(project_id: str) -> None:
+def save_briefs(project_id: str, only_missing: bool = False) -> None:
+    """장면 브리프 작성. only_missing이면 아직 브리프가 없는 장면이 있을 때만 (전체 흐름을 보고 함께 작성)."""
+    scenes = store.get_production(project_id).visual.scenes
+    if only_missing and all(scenes.get(s.id) and scenes[s.id].prompt for s in store.get_script(project_id).scenes):
+        return
     briefs = build_briefs(project_id)
     with store.lock(project_id):
         prod = store.get_production(project_id)
         for sid, b in briefs.items():
             a = prod.visual.scenes.setdefault(sid, VisualAsset())
-            a.prompt, a.motion = b["prompt"], b["motion"]
+            if not (only_missing and a.prompt):
+                a.prompt, a.motion = b["prompt"], b["motion"]
         store.save_production(project_id, prod)
+
+
+def set_approval(project_id: str, scene_ids: list[str] | None, approved: bool) -> None:
+    """장면 이미지 승인/해제. scene_ids가 None이면 이미지가 있는 모든 장면."""
+    with store.lock(project_id):
+        prod = store.get_production(project_id)
+        for sid, a in prod.visual.scenes.items():
+            if a.image and (scene_ids is None or sid in scene_ids):
+                a.image_approved = approved
+        store.save_production(project_id, prod)
+
+
+def approved_without_video(project_id: str) -> list[str]:
+    scenes = store.get_production(project_id).visual.scenes
+    return [s.id for s in store.get_script(project_id).scenes
+            if scenes.get(s.id) and scenes[s.id].image_approved and not scenes[s.id].video]
 
 
 def make_image(project_id: str, scene_id: str) -> None:
@@ -62,6 +94,8 @@ def make_video(project_id: str, scene_id: str) -> None:
     asset = store.get_production(project_id).visual.scenes.get(scene_id)
     if not asset or not asset.image:
         raise ValueError(f"{scene_id} 장면 이미지가 없습니다.")
+    if not asset.image_approved:
+        raise ValueError(f"{scene_id} 장면 이미지를 먼저 승인하세요.")
     engine = get_engine()
     ctx = _context(project_id, script, scene_id)
     rel = f"visual/{scene_id}.mp4"
@@ -78,11 +112,18 @@ def make_video(project_id: str, scene_id: str) -> None:
 
 
 def _run(project_id: str, label: str, fn, scene_ids: list[str]) -> bool:
+    """장면별 생성을 PARALLEL개씩 동시에 돌린다. 장면 하나의 실패는 그 장면의 error에 남고 전체는 계속된다."""
     try:
-        for n, sid in enumerate(scene_ids):
-            store.update_project(project_id, visual_job=JobState(status="running", progress=n / len(scene_ids), message=f"{label} ({n + 1}/{len(scene_ids)})"))
-            fn(project_id, sid)
-        store.update_project(project_id, visual_job=JobState(status="done", progress=1, message=f"{label} 완료"))
+        total = len(scene_ids)
+        store.update_project(project_id, visual_job=JobState(status="running", progress=0, message=f"{label} (0/{total})"))
+        with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+            futures = [pool.submit(fn, project_id, sid) for sid in scene_ids]
+            for n, fut in enumerate(as_completed(futures), 1):
+                fut.result()
+                store.update_project(project_id, visual_job=JobState(status="running", progress=n / total, message=f"{label} ({n}/{total})"))
+        failed = _failed(project_id, scene_ids, "video" if fn is make_video else "image")
+        msg = f"{label} 완료" + (f" · 실패 {failed}개 (장면별 ↻로 다시 시도)" if failed else "")
+        store.update_project(project_id, visual_job=JobState(status="done", progress=1, message=msg))
         return True
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
@@ -90,12 +131,18 @@ def _run(project_id: str, label: str, fn, scene_ids: list[str]) -> bool:
         return False
 
 
-def run_images(project_id: str) -> None:
+def _failed(project_id: str, scene_ids: list[str], what: str) -> int:
+    scenes = store.get_production(project_id).visual.scenes
+    return sum(1 for sid in scene_ids if not (scenes.get(sid) and getattr(scenes[sid], what)))
+
+
+def run_images(project_id: str, scene_ids: list[str] | None = None) -> None:
+    """scene_ids가 없으면 전체(브리프 새로 작성), 있으면 그 장면만 다시 만든다(기존 브리프 유지)."""
     script = store.get_script(project_id)
-    ids = [s.id for s in script.scenes]
+    ids = scene_ids or [s.id for s in script.scenes]
     try:
         store.update_project(project_id, visual_job=JobState(status="running", progress=0, message="장면 브리프 작성 중 (장면 분석 + 자사 대사 + 제품 이미지)"))
-        save_briefs(project_id)
+        save_briefs(project_id, only_missing=bool(scene_ids))
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         store.update_project(project_id, visual_job=JobState(status="error", message=f"장면 브리프 작성 실패: {e}"))
@@ -104,12 +151,14 @@ def run_images(project_id: str) -> None:
         return
     prod = store.get_production(project_id)
     ok = sum(1 for sid in ids if prod.visual.scenes.get(sid) and prod.visual.scenes[sid].image)
-    gates.open_gate(project_id, "images", f"장면 이미지 {ok}/{len(ids)}장 생성 · 엔진: {prod.visual.engine}")
+    if not scene_ids:
+        gates.open_gate(project_id, "images", f"장면 이미지 {ok}/{len(ids)}장 생성 · 전체 승인하면 영상화를 시작합니다 · 엔진: {prod.visual.engine}")
 
 
-def run_videos(project_id: str) -> None:
+def run_videos(project_id: str, scene_ids: list[str] | None = None) -> None:
+    """scene_ids가 없으면 '승인됐지만 아직 영상이 없는 장면'을 영상화한다."""
     from workflow import maybe_open_production_gate  # 순환 import 방지
 
-    script = store.get_script(project_id)
-    if _run(project_id, "장면 영상화", make_video, [s.id for s in script.scenes]):
+    ids = scene_ids or approved_without_video(project_id)
+    if _run(project_id, "장면 영상화", make_video, ids):
         maybe_open_production_gate(project_id)

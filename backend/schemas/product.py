@@ -17,7 +17,8 @@ class ProductImages(BaseModel):
 class Product(BaseModel):
     """제품 정보 입력서(md) 양식과 같은 순서의 필드."""
 
-    library_id: str | None = None  # 라이브러리에 저장된 경우의 id
+    library_id: str | None = None  # 템플릿(라이브러리)에 저장된 경우의 id
+    template_name: str = ""  # 템플릿 이름 — 제품명과 별개로 사용자가 언제든 바꿀 수 있음
     name: str = ""  # 1. 제품명
     usp: str = ""  # 2. 제품 USP (문단)
     features: list[str] = Field(default_factory=list)  # 3. 제품 특징

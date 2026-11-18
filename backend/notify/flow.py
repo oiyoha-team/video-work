@@ -24,7 +24,7 @@ def is_enabled() -> bool:
 def build_message(gate: Gate) -> str:
     link = f"{config.PUBLIC_BASE_URL}/#p={gate.project_id}&s={GATE_STEP[gate.kind]}"
     return "\n".join([
-        f"[오이요하 영상 자동화] {gate.project_name}",
+        f"[퍼포먼스 영상 자동화] {gate.project_name}",
         f"■ {gate.title}",
         gate.summary,
         "",

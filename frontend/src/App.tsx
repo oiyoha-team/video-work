@@ -20,24 +20,6 @@ const STEPS = [
   { n: 6, label: "결과물 다운로드", group: "영상" },
 ];
 const LAST_STEP = STEPS.length;
-const LAST_PROJECT_KEY = "oiyoha:lastProject";
-
-function readLastProject(): string | null {
-  try {
-    return localStorage.getItem(LAST_PROJECT_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeLastProject(id: string | null) {
-  try {
-    if (id) localStorage.setItem(LAST_PROJECT_KEY, id);
-    else localStorage.removeItem(LAST_PROJECT_KEY);
-  } catch {
-    /* 저장소 사용 불가 */
-  }
-}
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -46,6 +28,7 @@ export default function App() {
   const [view, setView] = useState(1);
   const [error, setError] = useState("");
   const [newName, setNewName] = useState("");
+  const [search, setSearch] = useState("");
   const [pendingGates, setPendingGates] = useState<Gate[]>([]);
   const [projectGates, setProjectGates] = useState<Gate[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
@@ -60,12 +43,10 @@ export default function App() {
   const openProject = (p: Project, step?: number) => {
     setProject(p);
     setView(Math.min(step ?? p.step, p.step, LAST_STEP));
-    writeLastProject(p.id);
   };
 
   const closeProject = () => {
     setProject(null);
-    writeLastProject(null);
     refreshProjects();
   };
 
@@ -75,9 +56,10 @@ export default function App() {
       .listProjects()
       .then((list) => {
         setProjects(list);
-        // URL(#p=<id>&s=<step>) → 마지막으로 연 기획안 순으로 복원
+        // 실행할 때마다 첫 화면(프로젝트 선택)부터 시작한다.
+        // 승인 알림 링크나 새로고침처럼 주소에 #p=<id>&s=<step>가 있을 때만 그 프로젝트를 바로 연다.
         const hash = initialHash.current;
-        const target = hash.get("p") ?? readLastProject();
+        const target = hash.get("p");
         const found = list.find((p) => p.id === target);
         if (found) openProject(found, Number(hash.get("s")) || undefined);
       })
@@ -119,9 +101,21 @@ export default function App() {
     return () => clearInterval(t);
   }, [running, refreshProject]);
 
+  const trimmedName = newName.trim().replace(/\s+/g, " ");
+  const duplicate = projects.some((p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase());
+
   const create = async () => {
+    if (!trimmedName) {
+      setError("프로젝트 이름을 입력하세요. 결과물 파일 이름에도 이 이름이 붙습니다.");
+      return;
+    }
+    if (duplicate) {
+      setError(`'${trimmedName}' 이름의 프로젝트가 이미 있습니다. 다른 이름을 쓰거나 아래 목록에서 불러오세요.`);
+      return;
+    }
     try {
-      const p = await api.createProject(newName.trim());
+      setError("");
+      const p = await api.createProject(trimmedName);
       setNewName("");
       await refreshProjects();
       openProject(p);
@@ -131,7 +125,7 @@ export default function App() {
   };
 
   const remove = async (p: Project) => {
-    if (!confirm(`'${p.name}' 기획안을 삭제할까요? 업로드한 영상과 만든 결과물이 모두 삭제됩니다.`)) return;
+    if (!confirm(`'${p.name}' 프로젝트를 삭제할까요? 업로드한 영상과 만든 결과물이 모두 삭제됩니다.`)) return;
     await api.deleteProject(p.id);
     if (project?.id === p.id) closeProject();
     refreshProjects();
@@ -153,7 +147,6 @@ export default function App() {
       const next = action === "approve" ? Math.min(p.step, LAST_STEP) : GATE_STEP[g.kind];
       setProject(p);
       setView(next);
-      writeLastProject(p.id);
       setReloadKey((k) => k + 1);
       refreshGates();
       refreshProjects();
@@ -176,7 +169,7 @@ export default function App() {
         <div className="brand" onClick={closeProject}>
           <span className="brand-mark">O</span>
           <div>
-            <div className="brand-title">오이요하 퍼포먼스 영상 자동화</div>
+            <div className="brand-title">퍼포먼스 영상 자동화</div>
             <div className="brand-sub">기획 자동화 → 영상 자동화</div>
           </div>
         </div>
@@ -190,7 +183,7 @@ export default function App() {
           <NotificationCenter gates={pendingGates} flowEnabled={!!status?.flow_enabled} onResolve={resolveGate} onOpen={openGate} />
           {project && (
             <button className="btn ghost" onClick={closeProject}>
-              기획안 목록
+              프로젝트 목록
             </button>
           )}
         </div>
@@ -201,27 +194,35 @@ export default function App() {
       {!project ? (
         <main className="home">
           <section className="card">
-            <h2>새 기획안 만들기</h2>
+            <h2>새 프로젝트 시작</h2>
+            <p className="muted">프로젝트 이름을 정하면 레퍼런스 분석부터 시작합니다. 다운로드되는 결과물 파일 이름 앞에도 이 이름이 붙습니다.</p>
             <div className="row">
               <input
                 className="grow"
-                placeholder="기획안 이름 (예: 시카세럼 여름 캠페인 #1)"
+                autoFocus
+                placeholder="프로젝트 이름 (예: 무쿠리셋3 11월 캠페인 #1)"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && create()}
               />
-              <button className="btn primary" onClick={create}>
-                만들기
+              <button className="btn primary" disabled={!trimmedName || duplicate} onClick={create}>
+                시작하기
               </button>
             </div>
+            {duplicate && <small className="field-warn">같은 이름의 프로젝트가 이미 있습니다. 이어서 작업하려면 아래 목록에서 불러오세요.</small>}
           </section>
           <section className="card">
-            <h2>기획안 목록</h2>
+            <div className="section-head">
+              <h2>이전 프로젝트 불러오기</h2>
+              {projects.length > 5 && (
+                <input className="project-search" placeholder="이름으로 찾기" value={search} onChange={(e) => setSearch(e.target.value)} />
+              )}
+            </div>
             {projects.length === 0 ? (
-              <p className="muted">아직 기획안이 없습니다.</p>
+              <p className="muted">아직 만든 프로젝트가 없습니다.</p>
             ) : (
               <ul className="project-list">
-                {projects.map((p) => {
+                {projects.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase())).map((p) => {
                   const waiting = pendingGates.filter((g) => g.project_id === p.id).length;
                   return (
                     <li key={p.id}>

@@ -24,20 +24,35 @@ GROUPS = [
 ]
 FOLDERS = {"clips": "영상클립", "audio": "음성", "images": "이미지", "docs": ""}
 
-GUIDE = """[오이요하 퍼포먼스 영상 · 편집용 결과물]
+GUIDE = """[퍼포먼스 영상 · 편집용 결과물] 프로젝트: {name}
 
-영상클립/  장면 순서대로 번호가 붙은 클립 (scene01.mp4, scene02.mp4 ...)
-음성/      문장별 대사 음성 (scene01_1.wav, scene01_2.wav ...) — 장면 번호_문장 번호, 대사가 없는 장면은 파일이 없습니다
+모든 파일 이름은 프로젝트명({p})으로 시작합니다. 다른 프로젝트 결과물과 한 폴더에 모아도 섞이지 않습니다.
+
+영상클립/  장면 순서대로 번호가 붙은 클립 ({p}_scene01.mp4, {p}_scene02.mp4 ...)
+음성/      문장별 대사 음성 ({p}_scene01_1.wav, {p}_scene01_2.wav ...) — 장면 번호_문장 번호, 대사가 없는 장면은 파일이 없습니다
 이미지/    영상 클립의 원본 장면 이미지
-timeline.csv   문장 한 줄씩: 장면 시작·끝 시간, 대사, 파일 이름 (엑셀에서 열림)
-subtitles.srt  대사 문장으로 만든 자막 초안 — 편집 툴에서 '자막 가져오기'로 불러오세요
-script.txt     확정된 대사 스크립트 (한 줄 = 한 문장)
+{p}_timeline.csv   문장 한 줄씩: 편집 시작 시간, 대사, 파일 이름 (엑셀에서 열림)
+{p}_subtitles_premiere.srt  ★ 프리미어용 자막 — 실제 음성 길이에 맞춘 시간 · 화면 비율에 맞춘 두 줄 나눔
+{p}_subtitles.srt  레퍼런스 장면 시간에 맞춘 자막 (음성을 장면 길이에 맞춰 줄여 쓸 때만 사용)
+{p}_script.txt     확정된 대사 스크립트 (한 줄 = 한 문장)
 
-편집 순서 예시
-1. 영상클립을 번호 순서대로 타임라인에 이어 붙입니다.
-2. 같은 장면 번호의 음성을 문장 순서대로 클립 위에 올립니다. (timeline.csv의 '장면 시작' 참고)
-3. subtitles.srt를 불러와 자막을 얹고 폰트·위치를 다듬습니다.
+프리미어 편집 순서 ({p}_subtitles_premiere.srt 기준)
+1. 파일 > 가져오기로 영상클립·음성 폴더와 {p}_subtitles_premiere.srt를 불러옵니다.
+2. timeline.csv의 '편집 장면 시작'에 영상클립을, '편집 음성 시작'에 음성을 놓습니다.
+   음성이 클립보다 긴 장면은 '편집 장면 끝'까지 클립을 늘리거나 정지 화면으로 채웁니다.
+3. 프로젝트 패널의 자막 파일을 타임라인 맨 앞(0초)에 끌어다 놓으면
+   캡션 트랙이 생기고 음성과 시간이 맞습니다. 글꼴·크기·위치는 '텍스트' 패널에서 한 번에 바꿉니다.
 """
+
+
+def file_prefix(project_name: str) -> str:
+    """결과물 파일 이름 앞에 붙일 프로젝트명. 파일 이름에 못 쓰는 글자와 띄어쓰기는 _로 바꾼다."""
+    safe = re.sub(r'[\\/:*?"<>|\s]+', "_", project_name.strip()).strip("._")
+    return safe[:40] or "프로젝트"
+
+# 프리미어 자막 한 줄 최대 글자 수 (화면 비율별). 넘으면 두 줄로, 두 줄도 넘으면 자막을 나눈다.
+CAPTION_CHARS = {"9:16": 16, "4:5": 20, "1:1": 20, "16:9": 28}
+SENTENCE_GAP = 0.15  # 같은 장면 안 문장 음성 사이 간격(초)
 
 
 def _srt_time(sec: float) -> str:
@@ -68,38 +83,173 @@ def build_srt(script: Script) -> str:
     )
 
 
+def edit_timeline(script: Script, prod) -> list[dict]:
+    """편집 기준 타임라인: 장면을 순서대로 이어 붙이되, 음성이 클립보다 길면 장면을 음성 길이만큼 늘린다.
+
+    장면마다 {start, end, lines: [(start, end, text, has_audio)]} — 프리미어 자막과 timeline.csv가 같은 값을 쓴다.
+    """
+    out, t = [], 0.0
+    for s in script.scenes:
+        clip_len = max(s.end - s.start, 0.1)
+        sentences = split_sentences(s.dialogue)
+        sa = prod.sound.scenes.get(s.id)
+        voiced = sa and len(sa.lines) == len(sentences) and all(x.audio and x.duration > 0 for x in sa.lines)
+        lines = []
+        if voiced:
+            cur = t
+            for x in sa.lines:
+                lines.append((cur, cur + x.duration, x.text, True))
+                cur += x.duration + SENTENCE_GAP
+            length = max(clip_len, cur - SENTENCE_GAP - t)
+        else:
+            # 음성이 없으면 장면 길이 안에서 글자 수 비율로 나눈다
+            weights = [max(1, len(re.findall(r"[가-힣A-Za-z0-9]", x))) for x in sentences]
+            cur = t
+            for sentence, w in zip(sentences, weights):
+                end = cur + clip_len * w / sum(weights)
+                lines.append((cur, end, sentence, False))
+                cur = end
+            length = clip_len
+        out.append({"start": t, "end": t + length, "lines": lines})
+        t += length
+    return out
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """띄어쓰기 기준으로 width 글자 안쪽에서 줄을 나눈다 (띄어쓰기 없이 길면 글자 단위로)."""
+    lines, cur = [], ""
+    for word in text.split():
+        while len(word) > width:  # 한 단어가 한 줄보다 긴 경우
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.append(word[:width])
+            word = word[width:]
+        if cur and len(cur) + 1 + len(word) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _two_lines(words: list[str], width: int) -> str | None:
+    """단어들을 두 줄 이하로, 두 줄이면 길이가 비슷하게 나눈다. 안 들어가면 None."""
+    one = " ".join(words)
+    if len(one) <= width:
+        return one
+    best = None
+    for i in range(1, len(words)):
+        top, bottom = " ".join(words[:i]), " ".join(words[i:])
+        if len(top) <= width and len(bottom) <= width:
+            score = abs(len(top) - len(bottom))
+            if best is None or score < best[0]:
+                best = (score, f"{top}\n{bottom}")
+    return best[1] if best else None
+
+
+def _caption_chunks(text: str, width: int) -> list[str]:
+    """문장을 자막 여러 개(각 최대 두 줄)로 나눈다. 조각 길이를 고르게 맞춰
+    끝에 한두 단어만 따로 남거나 말이 어색하게 끊기는 일을 줄인다."""
+    words = [w for line in _wrap(text, width) for w in line.split()]  # 너무 긴 단어는 _wrap이 미리 자름
+    if not words:
+        return []
+    total = sum(len(w) for w in words) + len(words) - 1
+    k = max(1, -(-total // (width * 2)))  # 필요한 최소 자막 수
+    while k <= len(words):
+        target = total / k
+        groups, cur, acc = [], [], 0
+        for i, w in enumerate(words):
+            cur.append(w)
+            acc += len(w) + 1
+            left_words, left_groups = len(words) - i - 1, k - len(groups) - 1
+            # 목표 길이에 닿았거나, 남은 단어가 남은 자막 수만큼밖에 없으면 끊는다
+            if left_groups > 0 and (acc >= target * (len(groups) + 1) or left_words == left_groups):
+                groups.append(cur)
+                cur = []
+        if cur:
+            groups.append(cur)
+        chunks = [_two_lines(g, width) for g in groups]
+        if all(chunks):
+            return chunks
+        k += 1
+    return _wrap(text, width)  # 예외적인 경우: 한 줄씩
+
+
+def premiere_cues(script: Script, prod) -> list[tuple[float, float, str]]:
+    """한 자막 = 최대 두 줄. 더 길면 문장 음성 시간을 글자 수 비율로 나눠 여러 자막으로 만든다."""
+    width = CAPTION_CHARS.get(script.meta.aspect_ratio, 20)
+    cues = []
+    for scene in edit_timeline(script, prod):
+        for a, b, text, _ in scene["lines"]:
+            chunks = _caption_chunks(text, width)
+            if not chunks:
+                continue
+            total = sum(len(c) for c in chunks)
+            t = a
+            for k, c in enumerate(chunks):
+                end = b if k == len(chunks) - 1 else t + (b - a) * len(c) / total
+                cues.append((t, end, c))
+                t = end
+    # 프리미어는 겹치거나 길이 0인 자막을 싫어하므로 정리
+    cleaned = []
+    for a, b, text in cues:
+        if cleaned and a < cleaned[-1][1]:
+            a = cleaned[-1][1]
+        if b - a >= 0.05:
+            cleaned.append((a, b, text))
+    return cleaned
+
+
+def build_premiere_srt(script: Script, prod) -> str:
+    return "".join(
+        f"{n}\n{_srt_time(a)} --> {_srt_time(b)}\n{text}\n\n" for n, (a, b, text) in enumerate(premiere_cues(script, prod), 1)
+    )
+
+
 def _scene_name(i: int) -> str:
     return f"scene{i + 1:02d}"
 
 
-def _write_docs(project_id: str, script: Script) -> Path:
-    """편집용 자료를 export/ 폴더에 (다시) 만든다."""
+def _write_docs(project_id: str, script: Script, prefix: str) -> Path:
+    """편집용 자료를 export/ 폴더에 (다시) 만든다. 안에 적는 파일 이름은 내려받을 때의 이름(프로젝트명 포함)과 같다."""
     prod = store.get_production(project_id)
     out = store.project_dir(project_id) / "export"
     out.mkdir(exist_ok=True)
 
     (out / "subtitles.srt").write_text(build_srt(script), encoding="utf-8")
+    # 윈도우 프리미어에서 한글이 깨지지 않도록 BOM 포함 UTF-8 + 윈도우 줄바꿈(CRLF)
+    with open(out / "subtitles_premiere.srt", "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(build_premiere_srt(script, prod))
+    timeline = edit_timeline(script, prod)
     (out / "script.txt").write_text(script_writer.to_text(script), encoding="utf-8")
     (out / "script.json").write_text(script.model_dump_json(indent=2), encoding="utf-8")
-    (out / "README.txt").write_text(GUIDE, encoding="utf-8")
+    (out / "README.txt").write_text(GUIDE.format(name=store.get_project(project_id).name, p=prefix), encoding="utf-8")
 
     buf = io.StringIO()
     w = csv.writer(buf)
     # 한 행 = 한 문장 (대사 없는 장면은 한 행)
-    w.writerow(["장면", "문장", "장면 시작(초)", "장면 끝(초)", "장면 길이(초)", "역할", "대사", "영상 파일", "음성 파일", "음성 길이(초)"])
-    for i, s in enumerate(script.scenes):
+    w.writerow([
+        "장면", "문장", "편집 장면 시작(초)", "편집 장면 끝(초)", "편집 음성 시작(초)", "역할", "대사",
+        "영상 파일", "음성 파일", "음성 길이(초)", "클립 길이(초)", "레퍼런스 시작(초)", "레퍼런스 끝(초)",
+    ])
+    for i, (s, tl) in enumerate(zip(script.scenes, timeline)):
         va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
         name = _scene_name(i)
-        clip = f"영상클립/{name}.mp4" if va and va.video else ""
+        clip = f"영상클립/{prefix}_{name}.mp4" if va and va.video else ""
         sentences = split_sentences(s.dialogue) or [""]
         sound_lines = sa.lines if sa else []
         for n, sentence in enumerate(sentences, 1):
             line = sound_lines[n - 1] if n <= len(sound_lines) else None
+            voiced = bool(line and line.audio)
+            cue = tl["lines"][n - 1] if n <= len(tl["lines"]) else None
             w.writerow([
-                i + 1, n if sentence else "", f"{s.start:.2f}", f"{s.end:.2f}", f"{s.end - s.start:.2f}", role_label(s.role),
-                sentence, clip,
-                f"음성/{name}_{n}.wav" if line and line.audio else "",
-                f"{line.duration:.2f}" if line and line.audio else "",
+                i + 1, n if sentence else "", f"{tl['start']:.2f}", f"{tl['end']:.2f}",
+                f"{cue[0]:.2f}" if cue and voiced else "", role_label(s.role), sentence, clip,
+                f"음성/{prefix}_{name}_{n}.wav" if voiced else "", f"{line.duration:.2f}" if voiced else "",
+                f"{s.end - s.start:.2f}", f"{s.start:.2f}", f"{s.end:.2f}",
             ])
     # 엑셀에서 한글이 깨지지 않도록 BOM 포함
     (out / "timeline.csv").write_text(buf.getvalue(), encoding="utf-8-sig")
@@ -113,7 +263,8 @@ def list_items(project_id: str) -> list[dict]:
         raise ValueError("스크립트가 없습니다.")
     prod = store.get_production(project_id)
     pdir = store.project_dir(project_id)
-    _write_docs(project_id, script)
+    prefix = file_prefix(store.get_project(project_id).name)
+    _write_docs(project_id, script, prefix)
 
     items: list[dict] = []
 
@@ -126,7 +277,7 @@ def list_items(project_id: str) -> list[dict]:
             "group": group,
             "label": label,
             "path": rel,
-            "filename": f"{folder}/{filename}" if folder else filename,
+            "filename": f"{folder}/{prefix}_{filename}" if folder else f"{prefix}_{filename}",
             "size": (pdir / rel).stat().st_size,
             "scene": scene,
         })
@@ -137,9 +288,11 @@ def list_items(project_id: str) -> list[dict]:
         add(f"clip:{s.id}", "clips", label, va.video if va else None, f"{name}.mp4", i + 1)
         for n, line in enumerate(sa.lines if sa else [], 1):
             add(f"audio:{s.id}:{n}", "audio", f"#{i + 1:02d}-{n} {line.text}", line.audio, f"{name}_{n}.wav", i + 1)
-        add(f"image:{s.id}", "images", label, va.image if va else None, f"{name}.jpg", i + 1)
+        add(f"image:{s.id}", "images", label, va.image if va else None, f"{name}{Path(va.image).suffix if va and va.image else '.jpg'}", i + 1)
 
-    for key, label in [("timeline.csv", "타임라인 (장면별 시간·파일 정리)"), ("subtitles.srt", "자막 (SRT)"),
+    for key, label in [("timeline.csv", "타임라인 (장면별 시간·파일 정리)"),
+                       ("subtitles_premiere.srt", "자막 — 프리미어용 (음성 길이에 맞춤)"),
+                       ("subtitles.srt", "자막 — 레퍼런스 장면 시간 기준"),
                        ("script.txt", "기획안 (텍스트)"), ("script.json", "기획안 (JSON)"), ("README.txt", "편집 안내")]:
         add(f"doc:{key}", "docs", label, f"export/{key}", key)
     return items

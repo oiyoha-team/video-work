@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 오이요하 퍼포먼스 영상 자동화 — Mac 스타터팩
+# 퍼포먼스 영상 자동화 — Mac 스타터팩
 # 필요한 프로그램이 없으면 Homebrew로 설치한 뒤 프로젝트를 준비한다.
 # 더블클릭이 안 되면 터미널에서: bash 1_설치하기.command
 cd "$(dirname "$0")" || exit 1
@@ -61,7 +61,7 @@ find_python() {
 }
 
 echo "========================================================"
-echo "   오이요하 퍼포먼스 영상 자동화 - 스타터팩 설치"
+echo "   퍼포먼스 영상 자동화 - 스타터팩 설치"
 echo "========================================================"
 echo "  필요한 프로그램을 확인하고, 없으면 자동으로 설치합니다."
 echo "  처음 설치는 인터넷 속도에 따라 10~20분 정도 걸릴 수 있습니다."
@@ -120,6 +120,8 @@ step 3 "Python 패키지 설치 (FastAPI, Whisper, Claude SDK, ffmpeg 등)"
 "$VPY" -m pip install --upgrade pip --disable-pip-version-check -q
 "$VPY" -m pip install -r "$ROOT/backend/requirements.txt" --disable-pip-version-check \
   || fail "Python 패키지 설치에 실패했습니다. 인터넷 연결을 확인한 뒤 다시 실행하세요."
+# 영상 링크 다운로드 도구는 사이트가 자주 바뀌므로 설치할 때마다 최신으로 올린다
+"$VPY" -m pip install --upgrade yt-dlp --disable-pip-version-check -q || warn "다운로드 도구(yt-dlp) 업데이트에 실패했습니다."
 ok "Python 패키지"
 
 # ── 4. 프론트엔드 ──

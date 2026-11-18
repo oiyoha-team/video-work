@@ -17,8 +17,8 @@ from sound import pipeline as sound_pipeline
 from visual import pipeline as visual_pipeline
 
 
-def start(target, project_id: str) -> None:
-    threading.Thread(target=target, args=(project_id,), daemon=True).start()
+def start(target, project_id: str, *args) -> None:
+    threading.Thread(target=target, args=(project_id, *args), daemon=True).start()
 
 
 def _advance(project_id: str, step: int) -> Project:
@@ -102,42 +102,68 @@ def start_production(project_id: str) -> Project:
     script = store.get_script(project_id)
     if script is None or script.status != "final":
         raise ValueError("기획안을 먼저 확정하세요.")
-    project = _advance(project_id, 5)
-    prod = store.get_production(project_id)
-    # 처음 들어온 경우 두 트랙을 동시에 시작
-    if not prod.visual.scenes and project.visual_job.status != "running":
-        start_images(project_id)
-    if not prod.sound.scenes and project.sound_job.status != "running":
-        start_sound(project_id)
+    # 자동으로 시작하지 않는다: 이미지는 예상 비용을 보고, 음성은 목소리·배속을 고른 뒤 화면에서 직접 시작한다
+    _advance(project_id, 5)
     return store.get_project(project_id)
 
 
-def start_images(project_id: str) -> None:
+def start_images(project_id: str, scene_ids: list[str] | None = None) -> None:
     _ensure_idle(store.get_project(project_id), "visual_job", "비주얼 작업")
     store.update_project(project_id, visual_job=JobState(status="running", message="이미지 생성 대기 중"))
-    start(visual_pipeline.run_images, project_id)
+    start(visual_pipeline.run_images, project_id, scene_ids)
 
 
-def start_videos(project_id: str) -> None:
+def start_videos(project_id: str, scene_ids: list[str] | None = None) -> None:
+    """승인된 이미지만 영상화한다. scene_ids가 없으면 '승인됐지만 아직 영상이 없는 장면' 전부."""
     _ensure_idle(store.get_project(project_id), "visual_job", "비주얼 작업")
+    scenes = store.get_production(project_id).visual.scenes
+    if scene_ids:
+        bad = [s for s in scene_ids if not (scenes.get(s) and scenes[s].image_approved)]
+        if bad:
+            raise ValueError(f"이미지를 먼저 승인하세요: {', '.join(bad)}")
+    elif not visual_pipeline.approved_without_video(project_id):
+        raise ValueError("영상화할 장면이 없습니다. 이미지를 먼저 승인하세요.")
     gates.close_kind(project_id, "images")
     store.update_project(project_id, visual_job=JobState(status="running", message="영상화 대기 중"))
-    start(visual_pipeline.run_videos, project_id)
+    start(visual_pipeline.run_videos, project_id, scene_ids)
 
 
-def start_sound(project_id: str) -> None:
+def approve_images_and_animate(project_id: str) -> None:
+    """[이미지 전체 승인]: 모든 이미지를 승인하고, 아직 영상이 없는 장면을 영상화한다 (화면·알림 센터·Flow 공통)."""
+    st = production_status(project_id)
+    if st["images"] < st["total"]:
+        raise ValueError("모든 장면의 이미지가 있어야 전체 승인할 수 있습니다.")
+    _ensure_idle(store.get_project(project_id), "visual_job", "비주얼 작업")
+    visual_pipeline.set_approval(project_id, None, True)
+    if visual_pipeline.approved_without_video(project_id):
+        start_videos(project_id)
+    else:
+        gates.close_kind(project_id, "images")
+
+
+def start_sound(project_id: str, scene_ids: list[str] | None = None) -> None:
     _ensure_idle(store.get_project(project_id), "sound_job", "음성 작업")
     store.update_project(project_id, sound_job=JobState(status="running", message="음성 생성 대기 중"))
-    start(sound_pipeline.run_sound, project_id)
+    start(sound_pipeline.run_sound, project_id, scene_ids)
 
 
 def production_status(project_id: str) -> dict:
     script = store.get_script(project_id)
     prod = store.get_production(project_id)
     ids = [s.id for s in script.scenes] if script else []
-    videos = sum(1 for i in ids if prod.visual.scenes.get(i) and prod.visual.scenes[i].video)
-    audios = sum(1 for i in ids if i in prod.sound.scenes)
-    return {"total": len(ids), "videos": videos, "audios": audios, "ready": bool(ids) and videos == len(ids) and audios == len(ids)}
+    vs = [prod.visual.scenes.get(i) for i in ids]
+    ss = [prod.sound.scenes.get(i) for i in ids]
+    st = {
+        "total": len(ids),
+        "images": sum(1 for a in vs if a and a.image),
+        "images_approved": sum(1 for a in vs if a and a.image and a.image_approved),
+        "videos": sum(1 for a in vs if a and a.video),
+        "audios": sum(1 for a in ss if a),
+        "lines": sum(len(a.lines) for a in ss if a),
+    }
+    # 영상·음성이 모두 있으면 [전체 승인]으로 다음 단계(결과물 받기)로 넘어갈 수 있다
+    st["ready"] = bool(ids) and st["videos"] == len(ids) and st["audios"] == len(ids)
+    return st
 
 
 def maybe_open_production_gate(project_id: str) -> None:
@@ -145,7 +171,7 @@ def maybe_open_production_gate(project_id: str) -> None:
     st = production_status(project_id)
     project = store.get_project(project_id)
     if st["ready"] and "running" not in (project.visual_job.status, project.sound_job.status):
-        gates.open_gate(project_id, "production", f"영상 클립 {st['videos']}개 · 음성 {st['audios']}개 준비 완료")
+        gates.open_gate(project_id, "production", f"영상 클립 {st['videos']}개 · 음성 {st['lines']}문장 준비 완료")
 
 
 # ── 5 → 6 결과물 다운로드 ─────────────────────────────────────────────
@@ -153,7 +179,7 @@ def maybe_open_production_gate(project_id: str) -> None:
 def confirm_production(project_id: str) -> Project:
     """영상 제작 확정. 이후에는 결과물을 내려받아 사용자가 직접 편집한다."""
     if not production_status(project_id)["ready"]:
-        raise ValueError("모든 장면의 영상 클립과 음성이 준비되어야 합니다.")
+        raise ValueError("모든 장면의 영상 클립과 음성이 있어야 전체 승인할 수 있습니다.")
     gates.close_kind(project_id, "production")
     _advance(project_id, 6)
     return store.update_project(project_id, completed=True)
@@ -164,7 +190,7 @@ def confirm_production(project_id: str) -> Project:
 APPROVE = {
     "analysis": confirm_analysis,
     "script": finalize_script,
-    "images": start_videos,
+    "images": approve_images_and_animate,
     "production": confirm_production,
 }
 

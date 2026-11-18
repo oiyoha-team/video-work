@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, dataUrl } from "../api";
+import { api, dataUrl, productBundleUrl } from "../api";
 import { AutoTextarea, ErrorBox, ListEditor } from "../components/common";
 import { MAX_IMAGES_PER_KIND } from "../types";
 import type { LibraryItem, Product, ProductImage, Project } from "../types";
@@ -81,7 +81,10 @@ export default function Step2Product({ project, onNext }: Props) {
   const mdRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api.getProduct(project.id).then(setProduct);
+    api.getProduct(project.id).then((p) => {
+      setProduct(p);
+      if (p.library_id) setSelected(p.library_id);
+    });
     api.listLibrary().then(setLibrary);
   }, [project.id]);
 
@@ -137,35 +140,59 @@ export default function Step2Product({ project, onNext }: Props) {
       if ((product.name || product.usp) && !confirm("현재 입력한 제품 정보가 저장된 제품으로 바뀝니다. 계속할까요?")) return;
       setProduct(await api.loadFromLibrary(project.id, selected));
       setDirty(false);
-      setNotice("저장된 제품 정보를 불러왔습니다.");
+      setNotice("템플릿을 불러왔습니다. 내용이나 사진을 고친 뒤 [템플릿에 저장]을 누르면 템플릿에도 반영됩니다.");
+    });
+
+  const renameTemplate = (libraryId: string) =>
+    run("이름 변경 중", async () => {
+      const item = library.find((l) => l.library_id === libraryId);
+      const name = prompt("새 템플릿 이름", item?.name ?? product.template_name);
+      if (name === null || !name.trim()) return;
+      await api.renameLibraryItem(libraryId, name.trim());
+      setLibrary(await api.listLibrary());
+      if (product.library_id === libraryId) setProduct((cur) => (cur ? { ...cur, template_name: name.trim() } : cur));
+      setNotice(`템플릿 이름을 '${name.trim()}'(으)로 바꿨습니다.`);
     });
 
   const deleteLibrary = () =>
     run("삭제 중", async () => {
       const item = library.find((l) => l.library_id === selected);
-      if (!item || !confirm(`저장된 제품 '${item.name}'을(를) 라이브러리에서 삭제할까요? (이 기획안의 정보는 유지됩니다)`)) return;
+      if (!item || !confirm(`템플릿 '${item.name}'을(를) 삭제할까요? (이 기획안에 입력된 정보는 유지됩니다)`)) return;
       await api.deleteLibraryItem(selected);
+      if (product.library_id === selected) setProduct({ ...product, library_id: null });
       setSelected("");
       setLibrary(await api.listLibrary());
     });
 
   const saveToLibrary = (overwrite: boolean) =>
     run("저장 중", async () => {
+      let name = "";
+      if (!overwrite) {
+        const input = prompt("새 템플릿 이름 (비워 두면 자동으로 '템플릿N')", product.name);
+        if (input === null) return;
+        name = input.trim();
+      }
       await saveFields();
-      const saved = await api.saveToLibrary(project.id, overwrite);
+      const saved = await api.saveToLibrary(project.id, overwrite, name);
       setProduct(saved);
       setLibrary(await api.listLibrary());
       setSelected(saved.library_id ?? "");
-      setNotice(overwrite ? "제품 라이브러리에 저장했습니다. 다음 기획안에서 불러올 수 있습니다." : "새 제품으로 라이브러리에 저장했습니다.");
+      setNotice(
+        overwrite
+          ? `템플릿 '${saved.template_name}'에 저장했습니다.`
+          : `새 템플릿 '${saved.template_name}'(으)로 저장했습니다. 다음 기획안에서 불러올 수 있습니다.`,
+      );
     });
 
   const importMarkdown = (file: File | undefined) =>
     run("md 파일 읽는 중", async () => {
       if (!file) return;
-      const res = await api.parseMarkdown(file);
+      // md만 올리면 글만, ZIP(md + 연출컷/·누끼컷/)이면 이미지도 함께 들어온다
+      const res = await api.importProduct(project.id, file);
       const f = res.fields;
       setProduct({
         ...product,
+        images: res.product.images,
         name: f.name || product.name,
         usp: f.usp || product.usp,
         features: f.features?.length ? f.features : product.features,
@@ -178,7 +205,13 @@ export default function Step2Product({ project, onNext }: Props) {
       });
       setDirty(true);
       if (res.warning) setError(res.warning);
-      else setNotice(`md 파일 내용을 채웠습니다 (${res.method === "claude" ? "Claude 자동 정리" : "템플릿 인식"}). 확인 후 진행하세요.`);
+      else
+        setNotice(
+          `파일 내용을 채웠습니다 (${res.method === "claude" ? "Claude 자동 정리" : "양식 인식"})` +
+            (res.images_added ? ` · 이미지 ${res.images_added}장 추가` : "") +
+            (res.images_skipped ? ` · ${res.images_skipped}장은 장수 제한·폴더 이름 때문에 건너뜀` : "") +
+            ". 확인 후 진행하세요.",
+        );
       if (mdRef.current) mdRef.current.value = "";
     });
 
@@ -235,37 +268,66 @@ export default function Step2Product({ project, onNext }: Props) {
 
       <section className="card toolbar-card">
         <div className="toolbar-group">
-          <span className="label">저장된 제품</span>
+          <span className="label">제품 템플릿</span>
           <select value={selected} onChange={(e) => setSelected(e.target.value)}>
-            <option value="">{library.length ? "선택하세요" : "저장된 제품 없음"}</option>
+            <option value="">{library.length ? "선택하세요" : "저장된 템플릿 없음"}</option>
             {library.map((l) => (
               <option key={l.library_id} value={l.library_id}>
                 {l.name}
+                {l.product_name && l.product_name !== l.name ? ` · ${l.product_name}` : ""}
               </option>
             ))}
           </select>
           <button className="btn small" disabled={!selected || !!busy} onClick={loadLibrary}>
             불러오기
           </button>
+          <button className="btn small ghost" disabled={!selected || !!busy} onClick={() => renameTemplate(selected)}>
+            이름 변경
+          </button>
           <button className="btn small ghost" disabled={!selected || !!busy} onClick={deleteLibrary}>
             삭제
           </button>
         </div>
         <div className="toolbar-group">
-          <span className="label">md 파일로 입력</span>
-          <button className="btn small" onClick={() => mdRef.current?.click()} disabled={!!busy}>
-            md 파일 선택
+          <span className="label">파일로 입력</span>
+          <button className="btn small" onClick={() => mdRef.current?.click()} disabled={!!busy} title="md 또는 ZIP(md + 연출컷/·누끼컷/ 폴더)">
+            md · ZIP 선택
           </button>
-          <button className="btn small ghost" onClick={() => download("제품정보_입력서_템플릿.md", MD_TEMPLATE)}>
-            템플릿 받기
+          <button className="btn small ghost" onClick={() => download("제품정보_입력서_빈양식.md", MD_TEMPLATE)}>
+            빈 양식 받기
           </button>
-          <input ref={mdRef} type="file" accept=".md,.markdown,.txt" hidden onChange={(e) => importMarkdown(e.target.files?.[0])} />
+          <button
+            className="btn small ghost"
+            disabled={!product.name.trim() || !!busy}
+            title="제품 정보 md와 연출컷·누끼컷을 ZIP 하나로 받습니다. 다시 올리면 이미지까지 함께 채워집니다."
+            onClick={() =>
+              run("저장 중", async () => {
+                await saveFields();
+                window.location.href = productBundleUrl(project.id);
+              })
+            }
+          >
+            현재 내용 받기 (md + 이미지)
+          </button>
+          <input ref={mdRef} type="file" accept=".md,.markdown,.txt,.zip" hidden onChange={(e) => importMarkdown(e.target.files?.[0])} />
         </div>
       </section>
 
       <div className="product-layout">
         <section className="card">
-          <h3>제품 정보 입력서</h3>
+          <div className="section-head">
+            <h3>제품 정보 입력서</h3>
+            {product.library_id ? (
+              <span className="template-tag">
+                템플릿: <b>{product.template_name || product.name}</b>
+                <button className="btn small ghost" disabled={!!busy} onClick={() => renameTemplate(product.library_id ?? "")}>
+                  이름 변경
+                </button>
+              </span>
+            ) : (
+              <span className="muted">템플릿에 저장되지 않은 새 제품</span>
+            )}
+          </div>
           <label className="field">
             <span>
               1. 제품명 <em>*</em>
@@ -328,22 +390,24 @@ export default function Step2Product({ project, onNext }: Props) {
 
       <footer className="action-bar">
         <span className="muted">
-          {product.library_id ? "라이브러리에 저장된 제품입니다" : "한 번 저장하면 다음 기획안에서 다시 입력할 필요가 없습니다"}
+          {product.library_id
+            ? `템플릿 '${product.template_name || product.name}'을(를) 사용 중 · 이미지는 바로 템플릿에 저장되고, 글 내용은 [템플릿에 저장]해야 반영됩니다`
+            : "템플릿으로 저장하면 다음 기획안에서 다시 입력할 필요가 없습니다"}
           {dirty && " · 수정한 내용이 있습니다"}
         </span>
         <div className="row">
           {product.library_id ? (
             <>
               <button className="btn" disabled={!!busy} onClick={() => saveToLibrary(true)}>
-                라이브러리 업데이트
+                템플릿에 저장
               </button>
               <button className="btn ghost" disabled={!!busy} onClick={() => saveToLibrary(false)}>
-                새 제품으로 저장
+                새 템플릿으로 저장
               </button>
             </>
           ) : (
             <button className="btn" disabled={!!busy} onClick={() => saveToLibrary(false)}>
-              제품 저장
+              템플릿으로 저장
             </button>
           )}
           <button className="btn primary" disabled={!!busy} onClick={next}>

@@ -30,9 +30,15 @@ ANTHROPIC_WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
 STT_ENGINE = os.getenv("STT_ENGINE", "local").strip().lower()
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
 
-# 영상 자동화 엔진 — 실제 엔진이 붙기 전까지 mock / system 으로 동작
-VISUAL_ENGINE = os.getenv("VISUAL_ENGINE", "mock").strip().lower()
-SOUND_ENGINE = os.getenv("SOUND_ENGINE", "system").strip().lower()  # system(OS 기본 음성) | silent
+# 영상 자동화 엔진 — 키가 있으면 실제 서비스, 없으면 mock / OS 음성으로 동작
+HIGGSFIELD_API_KEY = os.getenv("HIGGSFIELD_API_KEY", "").strip()  # "키ID:시크릿"
+HIGGSFIELD_IMAGE_MODEL = os.getenv("HIGGSFIELD_IMAGE_MODEL", "xai/grok-imagine-image-2.0").strip()
+HIGGSFIELD_VIDEO_MODEL = os.getenv("HIGGSFIELD_VIDEO_MODEL", "wan/v2.7/image-to-video").strip()  # 기획안별로 화면에서 변경 가능
+TYPECAST_API_KEY = os.getenv("TYPECAST_API_KEY", "").strip()
+TYPECAST_MODEL = os.getenv("TYPECAST_MODEL", "ssfm-v31").strip()
+
+VISUAL_ENGINE = (os.getenv("VISUAL_ENGINE", "").strip().lower() or ("higgsfield" if HIGGSFIELD_API_KEY else "mock"))  # higgsfield | mock
+SOUND_ENGINE = (os.getenv("SOUND_ENGINE", "").strip().lower() or ("typecast" if TYPECAST_API_KEY else "system"))  # typecast | system | silent
 
 # Flow 메신저 승인 알림 (추후 연동) — 비어 있으면 앱 화면 알림만 사용
 FLOW_API_URL = os.getenv("FLOW_API_URL", "").strip()

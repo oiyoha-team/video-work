@@ -1,6 +1,7 @@
 import type {
   AspectRatio,
   ChatMessage,
+  Estimate,
   ExportList,
   Gate,
   LibraryItem,
@@ -10,6 +11,10 @@ import type {
   ReferenceAnalysis,
   Script,
   Status,
+  TTSSettings,
+  TypecastVoice,
+  UrlCandidate,
+  VoicesMeta,
 } from "./types";
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -55,6 +60,11 @@ export const api = {
 
   // Step 1
   uploadReference: (pid: string, file: File) => request("POST", `${P(pid)}/reference`, files("file", [file])),
+  referenceFromUrl: (pid: string, url: string) =>
+    request<{ started: boolean; candidates?: UrlCandidate[] }>("POST", `${P(pid)}/reference/url`, { url }),
+  urlCandidates: (pid: string) => request<UrlCandidate[]>("GET", `${P(pid)}/reference/url/candidates`),
+  selectUrlCandidate: (pid: string, id: string) => request("POST", `${P(pid)}/reference/url/select`, { id }),
+  cancelUrlCandidates: (pid: string) => request("DELETE", `${P(pid)}/reference/url/candidates`),
   rerunAnalysis: (pid: string) => request("POST", `${P(pid)}/analyze`),
   getAnalysis: (pid: string) => request<ReferenceAnalysis | null>("GET", `${P(pid)}/analysis`),
   saveAnalysis: (pid: string, a: ReferenceAnalysis) => request<ReferenceAnalysis>("PUT", `${P(pid)}/analysis`, a),
@@ -67,13 +77,21 @@ export const api = {
     request<Product>("POST", `${P(pid)}/product/images/${kind}`, files("files", list)),
   deleteProductImage: (pid: string, kind: string, id: string) =>
     request<Product>("DELETE", `${P(pid)}/product/images/${kind}/${id}`),
-  saveToLibrary: (pid: string, overwrite: boolean) =>
-    request<Product>("POST", `${P(pid)}/product/save-to-library`, { overwrite }),
+  saveToLibrary: (pid: string, overwrite: boolean, template_name = "") =>
+    request<Product>("POST", `${P(pid)}/product/save-to-library`, { overwrite, template_name }),
+  renameLibraryItem: (libraryId: string, name: string) =>
+    request<{ library_id: string; name: string }>("PUT", `/api/products/${libraryId}/name`, { name }),
   loadFromLibrary: (pid: string, libraryId: string) =>
     request<Product>("POST", `${P(pid)}/product/load/${libraryId}`),
   confirmProduct: (pid: string) => request<Project>("POST", `${P(pid)}/product/confirm`),
   listLibrary: () => request<LibraryItem[]>("GET", "/api/products"),
   deleteLibraryItem: (libraryId: string) => request("DELETE", `/api/products/${libraryId}`),
+  importProduct: (pid: string, file: File) =>
+    request<{ fields: Partial<Product>; method: string; warning?: string; images_added: number; images_skipped: number; product: Product }>(
+      "POST",
+      `${P(pid)}/product/import`,
+      files("file", [file]),
+    ),
   parseMarkdown: (file: File) =>
     request<{ fields: Partial<Product>; method: string; warning?: string }>(
       "POST",
@@ -100,12 +118,21 @@ export const api = {
   // Step 5
   startProduction: (pid: string) => request<Project>("POST", `${P(pid)}/production/start`),
   getProduction: (pid: string) => request<Production>("GET", `${P(pid)}/production`),
-  generateImages: (pid: string) => request("POST", `${P(pid)}/visual/images`),
-  generateVideos: (pid: string) => request("POST", `${P(pid)}/visual/videos`),
-  regenerateVisual: (pid: string, sceneId: string, what: "image" | "video") =>
-    request<Production>("POST", `${P(pid)}/visual/scenes/${sceneId}/${what}`),
-  generateSound: (pid: string) => request("POST", `${P(pid)}/sound/generate`),
-  regenerateAudio: (pid: string, sceneId: string) => request<Production>("POST", `${P(pid)}/sound/scenes/${sceneId}`),
+  // scene_ids를 주면 그 장면만, 없으면 전체 (영상은 '승인됐지만 영상이 없는 장면')
+  generateImages: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/images`, { scene_ids: scene_ids ?? null }),
+  generateVideos: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/videos`, { scene_ids: scene_ids ?? null }),
+  approveAllImages: (pid: string) => request("POST", `${P(pid)}/visual/approve`),
+  generateSound: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/sound/generate`, { scene_ids: scene_ids ?? null }),
+  regenerateLine: (pid: string, sceneId: string, n: number) =>
+    request<Production>("POST", `${P(pid)}/sound/scenes/${sceneId}/lines/${n}`),
+  setTTSSettings: (pid: string, body: TTSSettings & { voice_id: string }) => request<Production>("PUT", `${P(pid)}/sound/settings`, body),
+  previewTTS: (pid: string, body: TTSSettings & { voice_id: string }) =>
+    request<{ url: string; text: string }>("POST", `${P(pid)}/sound/preview`, body),
+  voicesMeta: () => request<VoicesMeta>("GET", "/api/voices/meta"),
+  estimate: (pid: string) => request<Estimate>("GET", `${P(pid)}/production/estimate`),
+  setVideoModel: (pid: string, video_model: string) => request<Production>("PUT", `${P(pid)}/visual/model`, { video_model }),
+  listVoices: (gender = "", age = "", trait = "") =>
+    request<TypecastVoice[]>("GET", `/api/voices?${new URLSearchParams({ gender, age, trait })}`),
   confirmProduction: (pid: string) => request<Project>("POST", `${P(pid)}/production/confirm`),
 
   // Step 6
@@ -121,5 +148,7 @@ export const api = {
 
 export const zipUrl = (pid: string, keys: string[] | null) =>
   `${P(pid)}/export/zip${keys ? `?items=${encodeURIComponent(keys.join(","))}` : ""}`;
+
+export const productBundleUrl = (pid: string) => `${P(pid)}/product/bundle`;
 
 export const dataUrl = (pid: string, ...parts: string[]) => `/data/projects/${pid}/${parts.join("/")}`;

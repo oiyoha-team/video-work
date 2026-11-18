@@ -33,6 +33,10 @@ export interface Status {
   whisper_model: string;
   visual_engine: string;
   sound_engine: string;
+  visual_engine_id: "higgsfield" | "mock";
+  sound_engine_id: "typecast" | "system" | "silent";
+  video_models: VideoModel[];
+  default_video_model: string;
   flow_enabled: boolean;
   max_video_sec: number;
   aspect_ratios: AspectRatio[];
@@ -63,6 +67,7 @@ export interface VisualAsset {
   prompt: string; // 장면 브리프 (장면 분석 + 자사 대사 + 제품 이미지 기반)
   motion: string;
   image: string | null;
+  image_approved: boolean; // [이미지 전체 승인] 후 영상화
   video: string | null;
   error: string;
   v: number;
@@ -72,6 +77,15 @@ export interface SoundLine {
   text: string;
   audio: string | null;
   duration: number;
+  error: string;
+  v: number;
+}
+
+export interface TTSSettings {
+  tempo: number; // 0.5 ~ 2
+  emotion: string; // smart = 앞뒤 문맥으로 자동
+  emotion_intensity: number; // 0 ~ 2
+  pitch: number; // -12 ~ 12
 }
 
 export interface SoundAsset {
@@ -96,10 +110,53 @@ export interface ExportList {
   items: ExportItem[];
 }
 
+export interface VideoModel {
+  id: string;
+  label: string;
+  min_sec: number;
+  usd_per_sec: number;
+}
+
+export interface Estimate {
+  scenes: number;
+  video_seconds: number;
+  video_model: string;
+  images_usd: number;
+  videos_usd: number;
+  total_usd: number;
+  billable: boolean;
+  image_usd_each: number;
+  scene_video_usd: Record<string, number>;
+}
+
+export interface TypecastVoice {
+  voice_id: string;
+  name: string;
+  gender: "male" | "female" | null;
+  age: string | null;
+  traits: string[]; // 성격 (타입캐스트 용도 태그·고유 감정에서 추정)
+  emotions: string[];
+  use_cases: string[];
+  preview_url: string | null;
+}
+
+export interface VoicesMeta {
+  traits: string[];
+  emotion_labels: Record<string, string>;
+}
+
 export interface Production {
-  visual: { engine: string; scenes: Record<string, VisualAsset> };
-  sound: { engine: string; voice: string; scenes: Record<string, SoundAsset> };
-  status: { total: number; videos: number; audios: number; ready: boolean };
+  visual: { engine: string; video_model: string; scenes: Record<string, VisualAsset> };
+  sound: { engine: string; voice: string; voice_id: string; settings: TTSSettings; scenes: Record<string, SoundAsset> };
+  status: {
+    total: number;
+    images: number;
+    images_approved: number;
+    videos: number;
+    audios: number;
+    lines: number;
+    ready: boolean;
+  };
 }
 
 // ── Step 1 ──
@@ -152,6 +209,7 @@ export interface ProductImage {
 // 제품 정보 입력서(md) 양식과 같은 순서
 export interface Product {
   library_id: string | null;
+  template_name: string;
   name: string; // 1. 제품명
   usp: string; // 2. 제품 USP
   features: string[]; // 3. 제품 특징
@@ -167,7 +225,8 @@ export const MAX_IMAGES_PER_KIND = 5;
 
 export interface LibraryItem {
   library_id: string;
-  name: string;
+  name: string; // 템플릿 이름
+  product_name: string;
   updated_at: number;
 }
 
@@ -208,4 +267,15 @@ export interface ChatMessage {
   content: string;
   changes?: ChatChange[];
   status?: "pending" | "applied" | "dismissed" | "none";
+}
+
+/** 링크로 받은 레퍼런스 영상 후보 (한 링크에서 여러 개가 나올 수 있음) */
+export interface UrlCandidate {
+  id: string;
+  file: string;
+  width: number;
+  height: number;
+  duration: number;
+  aspect_ratio: string;
+  has_audio: boolean;
 }

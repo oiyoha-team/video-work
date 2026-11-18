@@ -1,4 +1,4 @@
-﻿# 오이요하 퍼포먼스 영상 자동화 — Windows 스타터팩
+﻿# 퍼포먼스 영상 자동화 — Windows 스타터팩
 # 1_설치하기.bat 에서 실행된다. 필요한 프로그램이 없으면 winget으로 설치한 뒤 프로젝트를 준비한다.
 param(
     [switch]$Auto  # 질문 없이 기본값으로 진행 (자동 테스트용)
@@ -90,7 +90,7 @@ function Test-VCRedist {
 }
 
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "   오이요하 퍼포먼스 영상 자동화 - 스타터팩 설치" -ForegroundColor Green
+Write-Host "   퍼포먼스 영상 자동화 - 스타터팩 설치" -ForegroundColor Green
 Write-Host "========================================================" -ForegroundColor Green
 Write-Host "  필요한 프로그램을 확인하고, 없으면 자동으로 설치합니다."
 Write-Host "  처음 설치는 인터넷 속도에 따라 10~20분 정도 걸릴 수 있습니다."
@@ -101,6 +101,18 @@ Write-Host ""
 Write-Host "  감지된 환경: $osName ($arch) → Windows 방식(winget, .bat)으로 진행합니다." -ForegroundColor Cyan
 if ($arch -eq 'ARM64') {
     Warn "ARM 기반 Windows입니다. 음성 인식 패키지가 설치되지 않을 수 있습니다. 문제가 생기면 x64 Python을 설치해 주세요."
+}
+
+# ── 설치 위치 확인 ─────────────────────────────────────────────
+# 설치되는 부품 중 가장 긴 파일 경로가 폴더 경로 뒤로 약 165자다. 윈도우는 기본적으로 경로 260자를
+# 넘으면 파일을 만들지 못하므로(긴 경로 허용이 꺼진 경우), 폴더 경로가 길면 설치 도중 실패한다.
+$MaxRootLen = 75
+$longPaths = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
+if ($Root.Length -gt $MaxRootLen -and $longPaths -ne 1) {
+    Write-Host ""
+    Write-Host "  현재 폴더 위치: $Root" -ForegroundColor Yellow
+    Write-Host "  (경로 길이 $($Root.Length)자 / 최대 $($MaxRootLen)자)" -ForegroundColor Yellow
+    Fail "프로그램 폴더가 너무 깊은 곳에 있어서 설치할 수 없습니다 (윈도우 경로 길이 제한). 이 폴더를 C:\영상자동화 처럼 짧은 위치로 옮긴 뒤 1_설치하기.bat 을 다시 실행하세요."
 }
 
 # ── 1. 필수 프로그램 ─────────────────────────────────────────────
@@ -155,7 +167,10 @@ Ok "가상환경 (.venv)"
 Step 3 "Python 패키지 설치 (FastAPI, Whisper, Claude SDK, ffmpeg 등)"
 & $VenvPy -m pip install --upgrade pip --disable-pip-version-check -q
 & $VenvPy -m pip install -r (Join-Path $Root 'backend\requirements.txt') --disable-pip-version-check
-if ($LASTEXITCODE -ne 0) { Fail "Python 패키지 설치에 실패했습니다. 인터넷 연결을 확인한 뒤 다시 실행하세요." }
+if ($LASTEXITCODE -ne 0) { Fail "Python 패키지 설치에 실패했습니다. 위의 ERROR 줄을 확인하세요. 대부분 인터넷 연결 문제이며, 'No such file or directory' 오류라면 프로그램 폴더를 C:\영상자동화 처럼 짧은 위치로 옮긴 뒤 다시 실행하세요." }
+# 영상 링크 다운로드 도구는 사이트가 자주 바뀌므로 설치할 때마다 최신으로 올린다
+& $VenvPy -m pip install --upgrade yt-dlp --disable-pip-version-check -q
+if ($LASTEXITCODE -ne 0) { Warn "다운로드 도구(yt-dlp) 업데이트에 실패했습니다." }
 Ok "Python 패키지"
 
 # ── 4. 프론트엔드 ─────────────────────────────────────────────

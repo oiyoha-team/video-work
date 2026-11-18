@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { api, dataUrl } from "../api";
 import { AutoTextarea, ErrorBox, JobProgress, SceneDetailEditor } from "../components/common";
 import { ASPECT_RATIOS, ROLES, SHOT_TYPES, fmtTime, roleLabel } from "../labels";
-import type { AspectRatio, Project, ReferenceAnalysis, Segment, Status } from "../types";
+import type { AspectRatio, Project, ReferenceAnalysis, Segment, Status, UrlCandidate } from "../types";
+
+const RATIO_LABEL: Record<string, string> = {
+  "9:16": "세로 9:16 (릴스·쇼츠·스토리)",
+  "4:5": "4:5 (피드)",
+  "1:1": "정사각 1:1",
+  "16:9": "가로 16:9",
+};
 
 interface Props {
   project: Project;
@@ -21,6 +28,20 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const job = project.analysis_job;
+  // 링크로 넣기
+  const [url, setUrl] = useState("");
+  const [showUrl, setShowUrl] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [candidates, setCandidates] = useState<UrlCandidate[]>([]);
+  const [pickedId, setPickedId] = useState("");
+
+  // 고르다가 페이지를 벗어났어도 받아둔 후보 목록을 다시 보여준다
+  useEffect(() => {
+    api.urlCandidates(project.id).then((list) => {
+      setCandidates(list);
+      setPickedId(list[0]?.id ?? "");
+    }).catch(() => {});
+  }, [project.id]);
 
   useEffect(() => {
     if (job.status === "running") return;
@@ -47,6 +68,47 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
       if (fileRef.current) fileRef.current.value = "";
     }
   };
+
+  const fromUrl = async () => {
+    const link = url.trim();
+    if (!link) return;
+    if (analysis && !confirm("레퍼런스를 교체하면 기존 분석과 작성된 스크립트가 초기화됩니다. 계속할까요?")) return;
+    setDownloading(true);
+    setError("");
+    try {
+      const res = await api.referenceFromUrl(project.id, link);
+      if (res.started) {
+        setAnalysis(null);
+        setUrl("");
+        setShowUrl(false);
+        await onRefresh();
+      } else {
+        const list = res.candidates ?? [];
+        setCandidates(list);
+        setPickedId(list[0]?.id ?? ""); // 맨 앞이 추천(세로 9:16)
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const chooseCandidate = () =>
+    run("분석 시작 중", async () => {
+      await api.selectUrlCandidate(project.id, pickedId);
+      setCandidates([]);
+      setAnalysis(null);
+      setUrl("");
+      setShowUrl(false);
+      await onRefresh();
+    });
+
+  const cancelCandidates = () =>
+    run("취소 중", async () => {
+      await api.cancelUrlCandidates(project.id);
+      setCandidates([]);
+    });
 
   const updateSegment = (i: number, patch: Partial<Segment>) => {
     if (!analysis) return;
@@ -124,6 +186,68 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
     </label>
   );
 
+  const urlRow = (
+    <div className="url-row">
+      <input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && fromUrl()}
+        placeholder="유튜브 · 인스타그램 · 메타 광고 라이브러리 · 틱톡 링크를 붙여넣으세요"
+        disabled={downloading}
+      />
+      <button className="btn primary" disabled={!url.trim() || downloading} onClick={fromUrl}>
+        링크로 가져오기
+      </button>
+    </div>
+  );
+
+  if (downloading) {
+    return (
+      <div className="stack">
+        <JobProgress job={{ status: "running", progress: 0, message: "링크에서 영상을 받는 중입니다 (보통 10~30초)" }} title="영상 받는 중" />
+      </div>
+    );
+  }
+
+  if (candidates.length > 0 && job.status !== "running") {
+    return (
+      <div className="stack">
+        {error && <ErrorBox message={error} onClose={() => setError("")} />}
+        <div className="alert warn">
+          이 링크에서 영상이 <b>{candidates.length}개</b> 나왔습니다 (같은 광고의 비율별 버전일 수 있습니다). 분석할 영상을 하나 고르세요.
+        </div>
+        <div className="cand-grid">
+          {candidates.map((c, i) => (
+            <label key={c.id} className={`cand-card ${pickedId === c.id ? "picked" : ""}`}>
+              <video src={dataUrl(project.id, "url_candidates", c.file)} controls muted preload="metadata" />
+              <div className="cand-info">
+                <input type="radio" name="cand" checked={pickedId === c.id} onChange={() => setPickedId(c.id)} />
+                <div>
+                  <b>{RATIO_LABEL[c.aspect_ratio] ?? c.aspect_ratio}</b> {i === 0 && c.aspect_ratio === "9:16" && <span className="chip">추천</span>}
+                  <div className="muted">
+                    {c.width}×{c.height} · {fmtTime(c.duration)}
+                    {!c.has_audio && " · 소리 없음"}
+                  </div>
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+        <footer className="action-bar">
+          <span className="muted">고른 영상으로 장면·대사 분석을 시작합니다</span>
+          <div className="row">
+            <button className="btn" disabled={!!busy} onClick={cancelCandidates}>
+              취소
+            </button>
+            <button className="btn primary" disabled={!pickedId || !!busy} onClick={chooseCandidate}>
+              {busy || "이 영상으로 분석 →"}
+            </button>
+          </div>
+        </footer>
+      </div>
+    );
+  }
+
   if (job.status === "running") {
     return (
       <div className="stack">
@@ -138,7 +262,15 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
       <div className="stack">
         {job.status === "error" && <ErrorBox message={`분석 실패: ${job.message}`} />}
         {error && <ErrorBox message={error} onClose={() => setError("")} />}
-        {busy ? <JobProgress job={{ status: "running", progress: 0, message: busy }} title="영상 업로드 중" /> : uploadZone}
+        {busy ? (
+          <JobProgress job={{ status: "running", progress: 0, message: busy }} title="영상 업로드 중" />
+        ) : (
+          <>
+            {uploadZone}
+            <div className="url-or muted">또는 링크로 넣기</div>
+            {urlRow}
+          </>
+        )}
       </div>
     );
   }
@@ -191,10 +323,14 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
             <button className="btn small" onClick={() => fileRef.current?.click()}>
               영상 교체
             </button>
+            <button className="btn small" onClick={() => setShowUrl(!showUrl)}>
+              링크로 교체
+            </button>
             <button className="btn small" onClick={rerun}>
               재분석
             </button>
           </div>
+          {showUrl && urlRow}
           <input ref={fileRef} type="file" accept="video/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
         </aside>
 

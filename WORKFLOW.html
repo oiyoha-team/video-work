@@ -113,7 +113,7 @@
 </head>
 <body>
 <main>
-  <h1>오이요하 퍼포먼스 영상 자동화 · 워크플로우</h1>
+  <h1>퍼포먼스 영상 자동화 · 워크플로우</h1>
   <p class="lead">레퍼런스 영상 한 편에서 시작해 자사 제품 광고 영상이 나오기까지의 전체 흐름입니다. 마름모(◆)는 사람이 [진행] 또는 [수정]을 고르는 승인 지점이며, 앱 화면과 Flow 메신저 어디서든 응답할 수 있습니다.</p>
   <div class="legend">
     <span><i class="dot" style="background:var(--done)"></i>구현 완료</span>
@@ -151,21 +151,21 @@
     <section class="module visual">
       <div class="module-title"><span class="tag">2-A</span>비주얼 <span style="font-weight:500;color:var(--muted);font-size:12px">STEP 5</span></div>
       <div class="flow">
-        <div class="node"><i class="status s-mock"></i><b>장면 이미지 생성</b>
+        <div class="node"><i class="status s-done"></i><b>장면 이미지 생성</b>
           <ul><li>장면 브리프 = 장면 분석 + 자사 대사</li><li>제품 연출컷·누끼컷 = 참고 자료</li><li>비율 1:1 · 4:5 · 16:9 · 9:16</li></ul>
-          <span class="out">visual/s01.jpg</span></div>
-        <div class="gate"><i><span>◆</span></i>검수</div>
-        <div class="node"><i class="status s-mock"></i><b>영상화</b>
-          <ul><li>이미지 → 장면 길이 클립</li><li>카메라 움직임 반영</li></ul>
-          <span class="out">visual/s01.mp4</span></div>
+          <span class="out">힉스필드 Grok Image 2.0 → visual/s01.jpg</span></div>
+        <div class="gate"><i><span>◆</span></i>전체 승인</div>
+        <div class="node"><i class="status s-done"></i><b>영상화</b>
+          <ul><li>전체 승인 후 → 장면 길이 클립</li><li>카메라 움직임 반영</li><li>선택 장면만 다시 만들기 · 전체화면 보기</li></ul>
+          <span class="out">힉스필드 Wan 2.7 등 → visual/s01.mp4</span></div>
       </div>
     </section>
     <div class="par-label">동시 진행</div>
     <section class="module sound">
       <div class="module-title"><span class="tag">2-B</span>사운드 <span style="font-weight:500;color:var(--muted);font-size:12px">STEP 5</span></div>
       <div class="flow">
-        <div class="node"><i class="status s-mock"></i><b>대사 음성 생성 (TTS)</b>
-          <ul><li>자사 스크립트 문장 → 일레븐랩스·타입캐스트 (연동 예정)</li><li>문장 하나 = 음성 파일 하나</li><li>화자 페르소나·말투·속도 반영</li><li>장면 길이 초과 경고</li></ul>
+        <div class="node"><i class="status s-done"></i><b>대사 음성 생성 (TTS)</b>
+          <ul><li>목소리(성별·연령·성격)·배속·감정 직접 선택 → [생성 시작]</li><li>문장 하나 = 음성 파일 하나</li><li>마음에 안 드는 문장만 다시 만들기</li><li>장면 길이 초과 경고</li></ul>
           <span class="out">sound/s01_1.wav</span></div>
       </div>
     </section>
@@ -200,7 +200,7 @@
     <div class="node"><b>5. 같은 동작 실행</b><ul><li>어디서 눌러도<br>workflow.resolve_gate()</li></ul></div>
   </div>
   <div class="branches">
-    <div class="branch go"><b>▶ 진행</b> — 다음 단계가 자동으로 시작됩니다. 예) 스크립트 승인 → 기획 확정, 이미지 승인 → 영상화 시작, 클립·음성 승인 → 제작 확정 · 다운로드</div>
+    <div class="branch go"><b>▶ 진행</b> — 다음 단계가 자동으로 시작됩니다. 예) 스크립트 승인 → 기획 확정, 이미지 승인 → 전체 이미지 승인 + 영상화 시작, 클립·음성 승인 → 제작 확정 · 다운로드</div>
     <div class="branch fix"><b>✎ 수정</b> — 코멘트가 해당 단계 화면에 표시됩니다. <b>스크립트</b>는 Claude가 코멘트를 반영해 수정본을 만들고 다시 승인을 요청합니다 (API 키 연결 시).</div>
   </div>
   <div class="remote">

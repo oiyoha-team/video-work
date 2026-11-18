@@ -3,9 +3,12 @@
 프로젝트에는 항상 제품 '스냅샷'(projects/{id}/product/)을 둔다.
 라이브러리(data/products/{library_id}/)를 나중에 수정해도 과거 기획안은 바뀌지 않는다.
 """
+import io
 import re
 import shutil
+import tempfile
 import uuid
+import zipfile
 from pathlib import Path
 
 from config import PRODUCTS_DIR
@@ -50,6 +53,7 @@ def add_image(project_id: str, kind: str, filename: str, data: bytes) -> Product
     out.write_bytes(data)
     getattr(product.images, kind).append(ProductImage(id=image_id, path=rel, note=Path(filename).stem))
     store.save_product(project_id, product)
+    _sync_images_to_library(project_id, product)
     return product
 
 
@@ -60,7 +64,26 @@ def remove_image(project_id: str, kind: str, image_id: str) -> Product:
         (store.product_dir(project_id) / img.path).unlink(missing_ok=True)
         images.remove(img)
     store.save_product(project_id, product)
+    _sync_images_to_library(project_id, product)
     return product
+
+
+def _sync_images_to_library(project_id: str, product: Product) -> None:
+    """템플릿을 쓰는 중이면 이미지 추가·삭제를 템플릿에도 바로 반영한다 (글 내용은 [템플릿에 저장] 때만)."""
+    if not product.library_id:
+        return
+    lib = _library_dir(product.library_id)
+    path = lib / "product.json"
+    if not path.exists():
+        return
+    for kind in ("styled", "cutout"):
+        src = store.product_dir(project_id) / kind
+        shutil.rmtree(lib / kind, ignore_errors=True)
+        if src.exists():
+            shutil.copytree(src, lib / kind)
+    saved = Product.model_validate(store.read_json(path))
+    saved.images = product.images.model_copy(deep=True)
+    store.write_json(path, saved)
 
 
 def update_fields(project_id: str, incoming: Product) -> Product:
@@ -90,10 +113,41 @@ def list_library() -> list[dict]:
     for path in PRODUCTS_DIR.glob("*/product.json"):
         try:
             p = Product.model_validate(store.read_json(path))
-            out.append({"library_id": path.parent.name, "name": p.name, "updated_at": path.stat().st_mtime})
+            out.append({
+                "library_id": path.parent.name,
+                "name": p.template_name or p.name,  # 템플릿 이름 (없으면 제품명)
+                "product_name": p.name,
+                "updated_at": path.stat().st_mtime,
+            })
         except Exception:
             continue
-    return sorted(out, key=lambda x: x["updated_at"], reverse=True)
+    # 템플릿 이름 순 (템플릿1, 템플릿2 … 순서가 유지되도록 숫자는 숫자로 비교)
+    return sorted(out, key=lambda x: _natural_key(x["name"]))
+
+
+def _natural_key(s: str) -> list:
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
+def _next_template_name() -> str:
+    used = {item["name"] for item in list_library()}
+    n = 1
+    while f"템플릿{n}" in used:
+        n += 1
+    return f"템플릿{n}"
+
+
+def rename_template(library_id: str, name: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValueError("템플릿 이름을 입력하세요.")
+    path = _library_dir(library_id) / "product.json"
+    if not path.exists():
+        raise FileNotFoundError(library_id)
+    product = Product.model_validate(store.read_json(path))
+    product.template_name = name
+    store.write_json(path, product)
+    return {"library_id": library_id, "name": name}
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
@@ -102,14 +156,18 @@ def _copy_tree(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst)
 
 
-def save_to_library(project_id: str, overwrite: bool) -> Product:
+def save_to_library(project_id: str, overwrite: bool, template_name: str = "") -> Product:
     product = store.get_product(project_id)
     if not product.name.strip():
         raise ValueError("제품명을 입력해야 저장할 수 있습니다.")
     if overwrite and product.library_id and _library_dir(product.library_id).exists():
         library_id = product.library_id
+        # 다른 곳에서 이름을 바꿨을 수 있으므로 템플릿의 현재 이름을 유지
+        current = Product.model_validate(store.read_json(_library_dir(library_id) / "product.json"))
+        product.template_name = template_name.strip() or current.template_name or product.template_name
     else:
         library_id = uuid.uuid4().hex[:10]
+        product.template_name = template_name.strip() or _next_template_name()
     product.library_id = library_id
     store.save_product(project_id, product)
     _copy_tree(store.product_dir(project_id), _library_dir(library_id))
@@ -239,3 +297,84 @@ def parse_markdown(md: str) -> dict:
         "method": "fallback",
         "warning": "양식의 제목(## 1. 제품명, ## 2. 제품 USP …)을 찾지 못해 전체 내용을 '기타 메모'에 넣었습니다. 템플릿 양식을 사용하거나 Claude API를 연결하세요.",
     }
+
+
+# ── 제품 정보 묶음 (md + 이미지) ─────────────────────────────────────────────
+
+BUNDLE_FOLDERS = {"styled": "연출컷", "cutout": "누끼컷"}
+
+
+def product_to_markdown(p: Product) -> str:
+    """제품 정보 입력서 양식(md). 화면의 '현재 내용 받기'와 같은 형식."""
+    def items(values: list[str], bullet: bool) -> str:
+        if not values:
+            return "없음"
+        return "\n".join(f"- {v}" for v in values) if bullet else ", ".join(values)
+
+    sections = [
+        ("1. 제품명", p.name),
+        ("2. 제품 USP", p.usp),
+        ("3. 제품 특징", items(p.features, True)),
+        ("4. 사회적·수치적 근거 및 권위", p.evidence),
+        ("5. 제품 지칭 키워드", items(p.keywords, False)),
+        ("6. 들어가면 안 되는 표현", items(p.forbidden_phrases, False)),
+        ("7. 상세페이지 URL", p.detail_url),
+    ]
+    if p.extra.strip():
+        sections.append(("기타 메모", p.extra))
+    return "# 제품 정보 입력서\n\n" + "\n".join(f"---\n\n## {h}\n\n{(v or '').strip() or '없음'}\n" for h, v in sections)
+
+
+def export_bundle(project_id: str) -> Path:
+    """md 1개 + 연출컷/·누끼컷/ 폴더를 ZIP 하나로. 다시 올리면 글과 이미지가 함께 채워진다."""
+    product = store.get_product(project_id)
+    pdir = store.product_dir(project_id)
+    fd, name = tempfile.mkstemp(suffix=".zip")
+    import os
+    os.close(fd)
+    with zipfile.ZipFile(name, "w") as zf:
+        zf.writestr("제품정보.md", product_to_markdown(product))
+        for kind, folder in BUNDLE_FOLDERS.items():
+            for n, img in enumerate(getattr(product.images, kind), 1):
+                src = pdir / img.path
+                if src.exists():
+                    note = re.sub(r'[\\/:*?"<>|\s]+', "_", img.note).strip("._")
+                    zf.write(src, f"{folder}/{n:02d}{'_' + note if note else ''}{src.suffix}", compress_type=zipfile.ZIP_STORED)
+    return Path(name)
+
+
+def _decode(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp949", errors="replace")
+
+
+def import_bundle(project_id: str, filename: str, data: bytes) -> dict:
+    """md 또는 ZIP(md + 연출컷/·누끼컷/ 폴더)을 읽는다. 글은 화면에 채울 값으로 돌려주고, 이미지는 바로 추가한다."""
+    if not filename.lower().endswith(".zip"):
+        return {**parse_markdown(_decode(data)), "images_added": 0, "images_skipped": 0}
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as e:
+        raise ValueError("ZIP 파일을 열 수 없습니다.") from e
+    names = [n for n in zf.namelist() if not n.endswith("/")]
+    md_name = next((n for n in names if n.lower().endswith((".md", ".markdown", ".txt"))), None)
+    result = parse_markdown(_decode(zf.read(md_name))) if md_name else {"fields": {}, "method": "none"}
+
+    added = skipped = 0
+    for n in names:
+        if Path(n).suffix.lower() not in IMAGE_EXTS:
+            continue
+        kind = "cutout" if "누끼" in n or "cutout" in n.lower() else "styled" if "연출" in n or "styled" in n.lower() else None
+        if kind is None:
+            skipped += 1
+            continue
+        if len(getattr(store.get_product(project_id).images, kind)) >= MAX_IMAGES_PER_KIND:
+            skipped += 1
+            continue
+        stem = re.sub(r"^\d+_?", "", Path(n).stem) or Path(n).stem
+        add_image(project_id, kind, stem + Path(n).suffix, zf.read(n))
+        added += 1
+    return {**result, "images_added": added, "images_skipped": skipped}

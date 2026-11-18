@@ -44,7 +44,7 @@ def main() -> None:
         return
 
     print("=" * 56)
-    print("  오이요하 퍼포먼스 영상 자동화")
+    print("  퍼포먼스 영상 자동화")
     print(f"  주소: {URL}")
     print("  이 창을 닫으면 프로그램이 종료됩니다.")
     print("=" * 56, flush=True)

@@ -1,4 +1,4 @@
-"""오이요하 퍼포먼스 영상 자동화 — API 서버.
+"""퍼포먼스 영상 자동화 — API 서버.
 
 실행: backend 폴더에서 `uvicorn main:app --port 8000`
 단계 전환 규칙은 workflow.py, 승인 알림은 gates.py / notify/ 참고.
@@ -21,10 +21,12 @@ import workflow
 from llm import claude_client
 from llm.claude_client import ClaudeError, ClaudeNotConfigured
 from notify import flow
-from planning import chat_agent, products, script_writer, store, video_ingest
-from schemas import AspectRatio, JobState, Product, Project, ReferenceAnalysis, Script
+from planning import chat_agent, products, script_writer, store, url_download, video_ingest
+from planning.text import split_sentences
+from schemas import AspectRatio, JobState, Product, Project, ReferenceAnalysis, Script, TTSSettings
 from sound import engine as sound_engine
 from sound import pipeline as sound_pipeline
+from sound import typecast
 from visual import engine as visual_engine
 from visual import pipeline as visual_pipeline
 
@@ -45,7 +47,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="오이요하 퍼포먼스 영상 자동화", lifespan=lifespan)
+app = FastAPI(title="퍼포먼스 영상 자동화", lifespan=lifespan)
 
 
 @app.exception_handler(FileNotFoundError)
@@ -81,6 +83,10 @@ def status():
         "whisper_model": config.WHISPER_MODEL,
         "visual_engine": visual_engine.get_engine().label,
         "sound_engine": sound_engine.get_engine().label,
+        "visual_engine_id": visual_engine.get_engine().name,
+        "sound_engine_id": sound_engine.get_engine().name,
+        "video_models": [{"id": k, "label": v["label"], "min_sec": v["min"], "usd_per_sec": v["usd_per_sec"]} for k, v in visual_engine.VIDEO_MODELS.items()],
+        "default_video_model": config.HIGGSFIELD_VIDEO_MODEL,
         "flow_enabled": flow.is_enabled(),
         "max_video_sec": config.MAX_VIDEO_SEC,
         "aspect_ratios": config.ASPECT_RATIOS,
@@ -100,7 +106,13 @@ def list_projects():
 
 @app.post("/api/projects")
 def create_project(body: NewProject):
-    return store.create_project(body.name.strip())
+    name = " ".join(body.name.split())
+    if not name:
+        raise ValueError("프로젝트 이름을 입력하세요.")
+    # 결과물 파일 이름에 프로젝트명이 들어가므로 같은 이름은 막는다 (파일이 섞이지 않도록)
+    if any(p.name.strip().lower() == name.lower() for p in store.list_projects()):
+        raise ValueError(f"'{name}' 이름의 프로젝트가 이미 있습니다. 다른 이름을 쓰거나 목록에서 불러오세요.")
+    return store.create_project(name)
 
 
 @app.get("/api/projects/{pid}")
@@ -141,14 +153,24 @@ def upload_reference(pid: str, file: UploadFile = File(...)):
     if ext not in VIDEO_EXTS:
         raise ValueError(f"지원하지 않는 영상 형식입니다: {ext or '(없음)'} — mp4/mov/webm 권장")
 
+    ref_dir = _fresh_reference_dir(pid)
+    dest = ref_dir / f"source{ext}"
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return _start_reference(pid, dest)
+
+
+def _fresh_reference_dir(pid: str) -> Path:
     ref_dir = store.reference_dir(pid)
     if ref_dir.exists():
         shutil.rmtree(ref_dir)
     ref_dir.mkdir(parents=True)
-    dest = ref_dir / f"source{ext}"
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    return ref_dir
 
+
+def _start_reference(pid: str, dest: Path) -> dict:
+    """reference/source.* 에 영상이 놓인 뒤: 길이 확인 → 이후 단계 초기화 → 분석 시작."""
+    ref_dir = dest.parent
     try:
         info = video_ingest.probe(dest)
     except ValueError:
@@ -165,8 +187,70 @@ def upload_reference(pid: str, file: UploadFile = File(...)):
     for d in ("visual", "sound", "export"):
         shutil.rmtree(pdir / d, ignore_errors=True)
     store.update_project(pid, step=1, completed=False, **{f: JobState() for f in Project.JOB_FIELDS})
+    shutil.rmtree(_candidates_dir(pid), ignore_errors=True)
     workflow.start_analysis(pid)
     return {"duration": info.duration, "width": info.width, "height": info.height}
+
+
+# 링크로 넣기: 받은 영상이 하나면 바로 분석, 여러 개면 후보 목록을 돌려주고 화면에서 고르게 한다
+class ReferenceUrlBody(BaseModel):
+    url: str
+
+
+class SelectCandidateBody(BaseModel):
+    id: str
+
+
+def _candidates_dir(pid: str) -> Path:
+    return store.project_dir(pid) / "url_candidates"
+
+
+def _use_candidate(pid: str, cand: dict) -> dict:
+    src = _candidates_dir(pid) / cand["file"]
+    if not src.exists():
+        raise ValueError("받아둔 영상을 찾을 수 없습니다. 링크를 다시 넣어주세요.")
+    ref_dir = _fresh_reference_dir(pid)
+    dest = ref_dir / f"source{src.suffix.lower()}"
+    shutil.move(str(src), dest)
+    return _start_reference(pid, dest)
+
+
+@app.post("/api/projects/{pid}/reference/url")
+def reference_from_url(pid: str, body: ReferenceUrlBody):
+    project = store.get_project(pid)
+    if project.analysis_job.status == "running":
+        raise HTTPException(409, "분석이 진행 중입니다.")
+    cdir = _candidates_dir(pid)
+    candidates = url_download.as_dicts(url_download.download_candidates(body.url, cdir))
+    if len(candidates) == 1:
+        return {"started": True, **_use_candidate(pid, candidates[0])}
+    store.write_json(cdir / "candidates.json", candidates)
+    return {"started": False, "candidates": candidates}
+
+
+@app.get("/api/projects/{pid}/reference/url/candidates")
+def reference_candidates(pid: str):
+    path = _candidates_dir(pid) / "candidates.json"
+    return store.read_json(path) if path.exists() else []
+
+
+@app.post("/api/projects/{pid}/reference/url/select")
+def reference_select_candidate(pid: str, body: SelectCandidateBody):
+    project = store.get_project(pid)
+    if project.analysis_job.status == "running":
+        raise HTTPException(409, "분석이 진행 중입니다.")
+    path = _candidates_dir(pid) / "candidates.json"
+    candidates = store.read_json(path) if path.exists() else []
+    cand = next((c for c in candidates if c["id"] == body.id), None)
+    if cand is None:
+        raise ValueError("선택한 영상을 찾을 수 없습니다. 링크를 다시 넣어주세요.")
+    return {"started": True, **_use_candidate(pid, cand)}
+
+
+@app.delete("/api/projects/{pid}/reference/url/candidates")
+def reference_cancel_candidates(pid: str):
+    shutil.rmtree(_candidates_dir(pid), ignore_errors=True)
+    return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/analyze")
@@ -232,12 +316,17 @@ def delete_product_image(pid: str, kind: str, image_id: str):
 
 class SaveLibraryBody(BaseModel):
     overwrite: bool = True
+    template_name: str = ""
+
+
+class RenameBody(BaseModel):
+    name: str
 
 
 @app.post("/api/projects/{pid}/product/save-to-library")
 def save_product_to_library(pid: str, body: SaveLibraryBody):
     store.get_project(pid)
-    return products.save_to_library(pid, body.overwrite)
+    return products.save_to_library(pid, body.overwrite, body.template_name)
 
 
 @app.post("/api/projects/{pid}/product/load/{library_id}")
@@ -256,10 +345,32 @@ def list_library():
     return products.list_library()
 
 
+@app.put("/api/products/{library_id}/name")
+def rename_library_product(library_id: str, body: RenameBody):
+    return products.rename_template(library_id, body.name)
+
+
 @app.delete("/api/products/{library_id}")
 def delete_library_product(library_id: str):
     products.delete_from_library(library_id)
     return {"ok": True}
+
+
+@app.get("/api/projects/{pid}/product/bundle")
+def download_product_bundle(pid: str):
+    """제품 정보 md + 연출컷·누끼컷을 ZIP 하나로 내려받는다."""
+    product = store.get_product(pid)
+    path = products.export_bundle(pid)
+    name = f"{export.file_prefix(product.template_name or product.name or '제품정보')}_제품정보.zip"
+    return FileResponse(path, media_type="application/zip", filename=name, background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+@app.post("/api/projects/{pid}/product/import")
+async def import_product_bundle(pid: str, file: UploadFile = File(...)):
+    """md 또는 ZIP(md + 연출컷/·누끼컷/)을 올린다. 이미지는 바로 추가되고, 글은 화면 입력란에 채운다."""
+    store.get_project(pid)
+    result = products.import_bundle(pid, file.filename or "", await file.read())
+    return {**result, "product": store.get_product(pid)}
 
 
 @app.post("/api/products/parse-md")
@@ -376,18 +487,146 @@ def start_production(pid: str):
 
 @app.get("/api/projects/{pid}/production")
 def get_production(pid: str):
-    return {**store.get_production(pid).model_dump(), "status": workflow.production_status(pid)}
+    data = store.get_production(pid).model_dump()
+    data["visual"]["video_model"] = visual_pipeline.video_model(pid)
+    return {**data, "status": workflow.production_status(pid)}
+
+
+@app.get("/api/projects/{pid}/production/estimate")
+def production_estimate(pid: str):
+    """생성 전 예상 비용 (USD). 단가는 힉스필드 견적 기준(2026-11-18)이며 실제 청구와 다를 수 있다."""
+    script = store.get_script(pid)
+    if script is None:
+        raise ValueError("스크립트가 없습니다.")
+    model = visual_pipeline.video_model(pid)
+    spec = visual_engine.VIDEO_MODELS[model]
+    seconds = sum(visual_engine.clip_seconds(s, model) for s in script.scenes)
+    real = visual_engine.get_engine().name == "higgsfield"
+    images = round(len(script.scenes) * visual_engine.IMAGE_USD, 2) if real else 0
+    videos = round(seconds * spec["usd_per_sec"], 2) if real else 0
+    per_scene = {s.id: round(visual_engine.clip_seconds(s, model) * spec["usd_per_sec"], 3) if real else 0 for s in script.scenes}
+    return {"scenes": len(script.scenes), "video_seconds": seconds, "video_model": spec["label"],
+            "images_usd": images, "videos_usd": videos, "total_usd": round(images + videos, 2), "billable": real,
+            "image_usd_each": visual_engine.IMAGE_USD if real else 0, "scene_video_usd": per_scene}
+
+
+class VideoModelBody(BaseModel):
+    video_model: str
+
+
+@app.put("/api/projects/{pid}/visual/model")
+def set_video_model(pid: str, body: VideoModelBody):
+    if body.video_model not in visual_engine.VIDEO_MODELS:
+        raise ValueError("지원하지 않는 영상 모델입니다.")
+    with store.lock(pid):
+        prod = store.get_production(pid)
+        prod.visual.video_model = body.video_model
+        store.save_production(pid, prod)
+    return get_production(pid)
+
+
+@app.get("/api/voices")
+def list_voices(gender: str = "", age: str = "", trait: str = ""):
+    """타입캐스트 목소리 목록 (5단계 목소리 선택용). 성격(trait)은 용도 태그·고유 감정에서 추정한 값."""
+    if not typecast.is_configured():
+        return []
+    out = []
+    for v in typecast.list_voices():
+        traits = sound_engine.voice_traits(v)
+        if (gender and v.get("gender") != gender) or (age and v.get("age") != age) or (trait and trait not in traits):
+            continue
+        out.append({
+            "voice_id": v["voice_id"],
+            "name": v["voice_name"].get("kor") or v["voice_name"].get("eng"),
+            "gender": v.get("gender"),
+            "age": v.get("age"),
+            "traits": traits,
+            "emotions": sound_engine.voice_emotions(v["voice_id"]),
+            "use_cases": v.get("use_cases") or [],
+            "preview_url": v.get("preview_url"),
+        })
+    return out
+
+
+@app.get("/api/voices/meta")
+def voices_meta():
+    return {"traits": list(sound_engine.TRAIT_RULES), "emotion_labels": sound_engine.EMOTION_LABELS}
+
+
+class VoiceBody(BaseModel):
+    voice_id: str
+
+
+@app.put("/api/projects/{pid}/sound/voice")
+def set_voice(pid: str, body: VoiceBody):
+    if not any(v["voice_id"] == body.voice_id for v in typecast.list_voices()):
+        raise ValueError("목소리를 찾을 수 없습니다.")
+    with store.lock(pid):
+        prod = store.get_production(pid)
+        prod.sound.voice_id = body.voice_id
+        prod.sound.voice = sound_engine.voice_label(body.voice_id)
+        store.save_production(pid, prod)
+    return get_production(pid)
+
+
+class TTSSettingsBody(BaseModel):
+    voice_id: str = ""
+    tempo: float = 1.0
+    emotion: str = "smart"
+    emotion_intensity: float = 1.0
+    pitch: int = 0
+
+
+@app.put("/api/projects/{pid}/sound/settings")
+def set_tts_settings(pid: str, body: TTSSettingsBody):
+    if body.voice_id and not any(v["voice_id"] == body.voice_id for v in typecast.list_voices()):
+        raise ValueError("목소리를 찾을 수 없습니다.")
+    with store.lock(pid):
+        prod = store.get_production(pid)
+        if body.voice_id:
+            prod.sound.voice_id = body.voice_id
+            prod.sound.voice = sound_engine.voice_label(body.voice_id)
+        prod.sound.settings = TTSSettings(tempo=max(0.5, min(2.0, body.tempo)), emotion=body.emotion or "smart",
+                                          emotion_intensity=max(0.0, min(2.0, body.emotion_intensity)), pitch=max(-12, min(12, body.pitch)))
+        store.save_production(pid, prod)
+    return get_production(pid)
+
+
+@app.post("/api/projects/{pid}/sound/preview")
+def preview_tts(pid: str, body: TTSSettingsBody):
+    """현재 설정으로 첫 문장을 읽어 본다 (저장하지 않음)."""
+    script = store.get_script(pid)
+    sentences = [x for s in script.scenes for x in split_sentences(s.dialogue)] if script else []
+    if not sentences:
+        raise ValueError("읽을 대사가 없습니다.")
+    settings = TTSSettings(tempo=body.tempo, emotion=body.emotion or "smart", emotion_intensity=body.emotion_intensity, pitch=body.pitch)
+    rel = "sound/_preview.wav"
+    voice_id = body.voice_id or sound_pipeline.resolve_voice_id(pid)
+    sound_engine.get_engine().synthesize(sentences[0], script.voice, store.project_dir(pid) / rel,
+                                         next_text=sentences[1] if len(sentences) > 1 else "", voice_id=voice_id, settings=settings)
+    return {"url": f"/data/projects/{pid}/{rel}", "text": sentences[0]}
+
+
+class SceneIdsBody(BaseModel):
+    scene_ids: list[str] | None = None
 
 
 @app.post("/api/projects/{pid}/visual/images")
-def generate_images(pid: str):
-    workflow.start_images(pid)
+def generate_images(pid: str, body: SceneIdsBody | None = None):
+    workflow.start_images(pid, body.scene_ids if body else None)
     return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/visual/videos")
-def generate_videos(pid: str):
-    workflow.start_videos(pid)
+def generate_videos(pid: str, body: SceneIdsBody | None = None):
+    workflow.start_videos(pid, body.scene_ids if body else None)
+    return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/visual/approve")
+def approve_images(pid: str):
+    """[이미지 전체 승인 → 영상화]: 전체 승인 후 영상이 없는 장면을 영상화한다."""
+    workflow.approve_images_and_animate(pid)
     return {"ok": True}
 
 
@@ -405,9 +644,18 @@ def regenerate_visual(pid: str, scene_id: str, what: str):
 
 
 @app.post("/api/projects/{pid}/sound/generate")
-def generate_sound(pid: str):
-    workflow.start_sound(pid)
+def generate_sound(pid: str, body: SceneIdsBody | None = None):
+    workflow.start_sound(pid, body.scene_ids if body else None)
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/sound/scenes/{scene_id}/lines/{n}")
+def regenerate_line(pid: str, scene_id: str, n: int):
+    if store.get_project(pid).sound_job.status == "running":
+        raise HTTPException(409, "음성 작업이 진행 중입니다.")
+    sound_pipeline.make_line(pid, scene_id, n)
+    return get_production(pid)
+
 
 
 @app.post("/api/projects/{pid}/sound/scenes/{scene_id}")
@@ -436,10 +684,7 @@ def export_zip(pid: str, items: str = ""):
     project = store.get_project(pid)
     keys = [k for k in items.split(",") if k] or None
     path = export.build_zip(pid, keys)
-    script = store.get_script(pid)
-    base = (script.meta.title if script and script.meta.title else project.name).strip() or "결과물"
-    safe = "".join("_" if c in '\\/:*?"<>|' else c for c in base)
-    name = f"{safe}_{'전체' if keys is None else '선택'}.zip"
+    name = f"{export.file_prefix(project.name)}_결과물_{'전체' if keys is None else '선택'}.zip"
     return FileResponse(path, media_type="application/zip", filename=name, background=BackgroundTask(path.unlink, missing_ok=True))
 
 

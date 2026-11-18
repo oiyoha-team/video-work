@@ -27,3 +27,7 @@ desktop.ini
 
 # 빌드 캐시
 *.tsbuildinfo
+
+# 키가 들어 있을 수 있는 압축 파일, 다른 PC에서 받은 사본 폴더
+*.zip
+video-work-main_*/
