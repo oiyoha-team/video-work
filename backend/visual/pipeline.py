@@ -12,29 +12,47 @@ import gates
 from planning import store
 from schemas import JobState, Script, VisualAsset
 
-from .briefs import build_briefs, product_images, reference_for
-from .engine import VIDEO_MODELS, SceneContext, get_engine
+from .briefs import ROLE_OTHER, ROLE_PACKAGING, build_briefs, product_image_entries, reference_for
+from . import catalog
+from .engine import HiggsfieldEngine, SceneContext, get_engine, portrait_prompt
 
 PARALLEL = 3  # 동시에 생성할 장면 수 (힉스필드 계정 동시 처리 한도 안에서)
 
 
+def _uses_catalog() -> bool:
+    return isinstance(get_engine(), HiggsfieldEngine)
+
+
+def image_model(project_id: str) -> str:
+    chosen = store.get_production(project_id).visual.image_model
+    return catalog.resolve("image", chosen) if _uses_catalog() else (chosen or config.HIGGSFIELD_IMAGE_MODEL)
+
+
 def video_model(project_id: str) -> str:
     chosen = store.get_production(project_id).visual.video_model
-    return chosen if chosen in VIDEO_MODELS else config.HIGGSFIELD_VIDEO_MODEL
+    return catalog.resolve("video", chosen) if _uses_catalog() else (chosen or config.HIGGSFIELD_VIDEO_MODEL)
 
 
 def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
     scene = next(s for s in script.scenes if s.id == scene_id)
     ref = reference_for(project_id, scene.ref_segment)
     ref_frame = store.project_dir(project_id) / ref["frames"][0] if ref and ref["frames"] else None
-    asset = store.get_production(project_id).visual.scenes.get(scene_id) or VisualAsset()
+    visual = store.get_production(project_id).visual
+    asset = visual.scenes.get(scene_id) or VisualAsset()
+    roles = visual.product_roles
+    products = [(path, roles.get(rel) or (ROLE_PACKAGING if rel.startswith("cutout/") else ROLE_OTHER))
+                for rel, path in product_image_entries(project_id)]
     return SceneContext(
         scene=scene,
         aspect=script.meta.aspect_ratio,
         ref_frame=ref_frame,
-        product_images=product_images(project_id),
+        products=products,
         prompt=asset.prompt,
         motion=asset.motion,
+        has_person=asset.has_person,
+        cast_image=store.project_dir(project_id) / visual.cast_image if visual.cast_image else None,
+        product_scale=visual.product_scale,
+        image_model=image_model(project_id),
         video_model=video_model(project_id),
     )
 
@@ -47,10 +65,32 @@ def save_briefs(project_id: str, only_missing: bool = False) -> None:
     briefs = build_briefs(project_id)
     with store.lock(project_id):
         prod = store.get_production(project_id)
-        for sid, b in briefs.items():
+        for sid, b in briefs.scenes.items():
             a = prod.visual.scenes.setdefault(sid, VisualAsset())
             if not (only_missing and a.prompt):
-                a.prompt, a.motion = b["prompt"], b["motion"]
+                a.prompt, a.motion, a.has_person = b["prompt"], b["motion"], b["has_person"]
+        v = prod.visual
+        if not (only_missing and v.character):
+            if briefs.character != v.character:
+                v.cast_image = None  # 인물 설정이 바뀌면 기준 이미지도 새로 만든다
+            v.character = briefs.character
+        if not (only_missing and v.product_scale):
+            v.product_scale, v.product_roles = briefs.product_scale, briefs.product_roles
+        store.save_production(project_id, prod)
+
+
+def make_cast(project_id: str) -> None:
+    """새 인물 기준 이미지를 만든다 (참고 이미지 없이 글로만 → 레퍼런스 인물을 닮지 않음)."""
+    visual = store.get_production(project_id).visual
+    if not visual.character:
+        return
+    engine = get_engine()
+    rel = "visual/cast.jpg"
+    engine.generate_portrait(portrait_prompt(visual.character), store.get_script(project_id).meta.aspect_ratio,
+                             image_model(project_id), store.project_dir(project_id) / rel)
+    with store.lock(project_id):
+        prod = store.get_production(project_id)
+        prod.visual.cast_image, prod.visual.cast_v = rel, int(time.time() * 1000)
         store.save_production(project_id, prod)
 
 
@@ -76,7 +116,7 @@ def make_image(project_id: str, scene_id: str) -> None:
     ctx = _context(project_id, script, scene_id)
     rel = f"visual/{scene_id}.jpg"
     # 브리프는 유지하고 이미지가 바뀌면 기존 영상은 무효
-    asset = VisualAsset(prompt=ctx.prompt, motion=ctx.motion, v=int(time.time() * 1000))
+    asset = VisualAsset(prompt=ctx.prompt, motion=ctx.motion, has_person=ctx.has_person, v=int(time.time() * 1000))
     try:
         engine.generate_image(ctx, store.project_dir(project_id) / rel)
         asset.image = rel
@@ -143,9 +183,12 @@ def run_images(project_id: str, scene_ids: list[str] | None = None) -> None:
     try:
         store.update_project(project_id, visual_job=JobState(status="running", progress=0, message="장면 브리프 작성 중 (장면 분석 + 자사 대사 + 제품 이미지)"))
         save_briefs(project_id, only_missing=bool(scene_ids))
+        if not store.get_production(project_id).visual.cast_image:
+            store.update_project(project_id, visual_job=JobState(status="running", progress=0, message="새 인물 만드는 중 (레퍼런스 인물과 다른 얼굴·헤어·의상)"))
+            make_cast(project_id)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        store.update_project(project_id, visual_job=JobState(status="error", message=f"장면 브리프 작성 실패: {e}"))
+        store.update_project(project_id, visual_job=JobState(status="error", message=f"장면 브리프·인물 준비 실패: {e}"))
         return
     if not _run(project_id, "장면 이미지 생성", make_image, ids):
         return

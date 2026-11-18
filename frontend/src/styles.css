@@ -702,7 +702,7 @@ a.btn { text-decoration: none; color: var(--text); }
 
 .tts-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
 .tts-panel select { font-size: 13px; }
-.tts-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tts-filters { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .tts-slider { display: grid; grid-template-columns: 64px 1fr 52px; align-items: center; gap: 8px; font-size: 13px; }
 .tts-slider > span { color: var(--muted); font-weight: 600; }
 .tts-slider > b { text-align: right; font-variant-numeric: tabular-nums; }
@@ -747,3 +747,18 @@ a.btn { text-decoration: none; color: var(--text); }
   .lightbox { grid-template-columns: 32px 1fr 32px; }
   .tts-filters { grid-template-columns: 1fr; }
 }
+
+.voice-list { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.voice-list li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.voice-list li:last-child { border-bottom: none; }
+.voice-list li.on { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
+.voice-play { width: 30px; height: 30px; flex: none; border-radius: 50%; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 12px; }
+.voice-play:disabled { opacity: 0.4; cursor: not-allowed; }
+.voice-pick { flex: 1; display: flex; align-items: baseline; gap: 8px; background: none; border: none; color: var(--text); text-align: left; cursor: pointer; padding: 4px; font-size: 14px; }
+.voice-pick:disabled { cursor: not-allowed; }
+.link-btn { background: none; border: none; color: var(--accent-strong); cursor: pointer; padding: 0; font-size: inherit; text-decoration: underline; }
+.link-btn:disabled { opacity: 0.5; cursor: default; }
+
+.cast-box { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.cast-box img { width: 72px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 6px; cursor: zoom-in; flex: none; }
+.stack-tight { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

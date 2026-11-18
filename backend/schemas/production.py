@@ -6,6 +6,7 @@ class VisualAsset(BaseModel):
     prompt: str = ""  # 이미지 생성 프롬프트 (장면 분석 + 자사 대사 + 제품 이미지 기반, 영어)
     motion: str = ""  # 이미지→영상 변환 시 카메라 움직임
     image: str | None = None  # 프로젝트 폴더 기준 상대경로
+    has_person: bool = True  # 이 장면에 인물이 나오는지 (새 인물 참고 이미지를 넣을지)
     image_approved: bool = False  # [이미지 전체 승인] 후에만 영상화한다 (이미지를 다시 만들면 그 장면은 다시 승인 필요)
     video: str | None = None
     error: str = ""
@@ -30,6 +31,12 @@ class SoundAsset(BaseModel):
 
 class VisualTrack(BaseModel):
     engine: str = ""
+    character: str = ""  # 새 인물 설정 (레퍼런스 인물과 성별·연령대·체형만 비슷하고 얼굴·헤어·의상은 다름, 영어)
+    cast_image: str | None = None  # 새 인물 기준 이미지 (모든 장면에서 같은 사람으로 보이게 참고 이미지로 넣음)
+    cast_v: int = 0
+    product_scale: str = ""  # 손에 든 사진으로 읽은 제품 실제 크기 (영어)
+    product_roles: dict[str, str] = Field(default_factory=dict)  # {제품 사진 경로: in_hand | packaging | other}
+    image_model: str = ""  # 이미지 모델 (비우면 config 기본값). 목록은 visual/catalog.py가 12시간마다 갱신
     video_model: str = ""  # 이미지→영상 모델 (비우면 config 기본값)
     scenes: dict[str, VisualAsset] = Field(default_factory=dict)
 

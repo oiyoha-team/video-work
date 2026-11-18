@@ -32,7 +32,7 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
 
 # 영상 자동화 엔진 — 키가 있으면 실제 서비스, 없으면 mock / OS 음성으로 동작
 HIGGSFIELD_API_KEY = os.getenv("HIGGSFIELD_API_KEY", "").strip()  # "키ID:시크릿"
-HIGGSFIELD_IMAGE_MODEL = os.getenv("HIGGSFIELD_IMAGE_MODEL", "xai/grok-imagine-image-2.0").strip()
+HIGGSFIELD_IMAGE_MODEL = os.getenv("HIGGSFIELD_IMAGE_MODEL", "marketing-studio/image/flare").strip()
 HIGGSFIELD_VIDEO_MODEL = os.getenv("HIGGSFIELD_VIDEO_MODEL", "wan/v2.7/image-to-video").strip()  # 기획안별로 화면에서 변경 가능
 TYPECAST_API_KEY = os.getenv("TYPECAST_API_KEY", "").strip()
 TYPECAST_MODEL = os.getenv("TYPECAST_MODEL", "ssfm-v31").strip()

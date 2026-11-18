@@ -1,12 +1,11 @@
 """②-A 비주얼 엔진. 실제 이미지 생성/이미지-투-비디오 AI를 붙일 때 이 인터페이스를 구현한다.
 
-실제 엔진은 ctx.prompt(장면 브리프)로 이미지를 만들고, ctx.reference_frame(레퍼런스 장면)과
-ctx.product_images(자사 제품 연출컷·누끼컷 전체)를 참고 이미지로 쓴다.
+실제 엔진은 ctx.prompt(장면 브리프)로 이미지를 만들고, 참고 이미지로 ctx.ref_frame(레퍼런스 장면 — 구도만),
+ctx.cast_image(새 인물 — 얼굴·헤어·의상), ctx.products(제품 사진 — 손에 든 크기 비교·패키지)를 역할과 함께 넘긴다.
 
-- HiggsfieldEngine: 이미지(Grok Image 2.0, 참고 이미지 최대 10장) → 영상(VIDEO_MODELS 중 선택)
+- HiggsfieldEngine: 이미지 → 영상. 모델은 5단계에서 고르며 목록은 catalog.py가 12시간마다 갱신한다
 - MockVisualEngine: 키가 없을 때. 레퍼런스 프레임 + ffmpeg 줌/팬 효과 (전체 흐름 테스트용)
 """
-import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,25 +15,7 @@ import config
 import media
 from schemas import Scene
 
-from . import higgsfield
-
-# 이미지→영상 모델. min/max = 허용 길이(초, 정수). extra = 모델별 고정 옵션 (생성 음성은 끔: 음성은 TTS로 따로 만든다)
-VIDEO_MODELS: dict[str, dict] = {
-    "wan/v2.7/image-to-video": {"label": "Wan 2.7 · 720p", "min": 2, "max": 15, "extra": {"resolution": "720p"}, "usd_per_sec": 0.075},
-    "kling-video/v3.0/std/image-to-video": {"label": "Kling 3.0 Standard · 720p", "min": 3, "max": 15, "extra": {"sound": "off"}, "usd_per_sec": 0.0714},
-    "alibaba/happy-horse/v1.1/image-to-video": {"label": "Happy Horse 1.1 · 720p", "min": 2, "max": 15, "extra": {"resolution": "720p"}, "usd_per_sec": 0.14},
-    "bytedance/seedance-2.0/image-to-video": {"label": "Seedance 2.0 · 720p", "min": 4, "max": 15, "extra": {"resolution": "720p", "generate_audio": False}, "usd_per_sec": 0.1735},
-}
-IMAGE_USD = 0.09  # Grok Image 2.0 · 1k 한 장 (2026-11-18 견적 기준)
-
-# Grok Image 2.0이 지원하는 비율. 4:5는 없어서 3:4로 만든 뒤 4:5로 잘라 쓴다
-_GROK_ASPECT = {"9:16": "9:16", "16:9": "16:9", "1:1": "1:1", "4:5": "3:4"}
-
-
-def clip_seconds(scene: Scene, model: str) -> int:
-    """장면 길이를 모델이 허용하는 정수 초로 맞춘다 (짧으면 최소 길이로, 편집 때 잘라 쓰면 됨)."""
-    spec = VIDEO_MODELS[model]
-    return max(spec["min"], min(spec["max"], math.ceil(scene.end - scene.start - 0.05)))
+from . import catalog, higgsfield
 
 
 @dataclass
@@ -42,9 +23,13 @@ class SceneContext:
     scene: Scene
     aspect: str
     ref_frame: Path | None  # 대응 레퍼런스 구간 프레임
-    product_images: list[Path]  # 자사 제품 연출컷·누끼컷 전체 (장면에 배정하지 않는 참고 자료)
+    products: list[tuple[Path, str]]  # (제품 사진, 역할 in_hand|packaging|other) — 장면에 배정하지 않는 참고 자료
     prompt: str  # 장면 브리프 (영어 이미지 프롬프트)
     motion: str  # 이미지→영상 카메라 움직임
+    has_person: bool = True
+    cast_image: Path | None = None  # 새 인물 기준 이미지
+    product_scale: str = ""  # 제품 실제 크기 (영어)
+    image_model: str = config.HIGGSFIELD_IMAGE_MODEL
     video_model: str = config.HIGGSFIELD_VIDEO_MODEL
 
 
@@ -53,6 +38,7 @@ class VisualEngine(Protocol):
     label: str
 
     def generate_image(self, ctx: SceneContext, out: Path) -> None: ...
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None: ...
     def animate(self, image: Path, ctx: SceneContext, out: Path) -> None: ...
 
 
@@ -69,6 +55,11 @@ class MockVisualEngine:
         else:
             args = ["-y", "-f", "lavfi", "-i", f"color=c=0x2f8f4e:s={w}x{h}", "-frames:v", "1", str(out)]
         media.check(args, "장면 이미지 생성")
+
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None:
+        w, h = media.RESOLUTIONS[aspect]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        media.check(["-y", "-f", "lavfi", "-i", f"color=c=0x8a8f88:s={w}x{h}", "-frames:v", "1", str(out)], "인물 기준 이미지")
 
     def animate(self, image: Path, ctx: SceneContext, out: Path) -> None:
         w, h = media.RESOLUTIONS[ctx.aspect]
@@ -100,42 +91,88 @@ class MockVisualEngine:
 class HiggsfieldEngine:
     name = "higgsfield"
 
-    @property
-    def label(self) -> str:
-        return "힉스필드 · Grok Image 2.0 → 영상"
+    label = "힉스필드"
 
     def generate_image(self, ctx: SceneContext, out: Path) -> None:
-        refs = ([ctx.ref_frame] if ctx.ref_frame else []) + ctx.product_images
-        urls = [higgsfield.upload(p) for p in refs[:10]]
-        notes = []
-        if ctx.ref_frame:
-            notes.append("Image 1 is the reference scene: match its composition, camera angle, framing, lighting and mood.")
-        if ctx.product_images:
-            first = 2 if ctx.ref_frame else 1
-            notes.append(f"Images {first}-{len(urls)} show our product: reproduce its packaging exactly (shape, colors, label design) wherever the product appears.")
-        notes.append("Photorealistic. No added text, captions, subtitles or watermarks.")
-        body = {
-            "prompt": "\n\n".join([ctx.prompt, " ".join(notes)]),
-            "image_urls": urls,
-            "aspect_ratio": _GROK_ASPECT.get(ctx.aspect, "9:16"),
-            "resolution": "1k",
-            "quality": "medium",
-        }
-        res = higgsfield.generate(config.HIGGSFIELD_IMAGE_MODEL, body)
+        spec = catalog.spec("image", ctx.image_model)
+        if spec is None:
+            raise RuntimeError(f"이미지 모델 {ctx.image_model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
+        refs = _pick_refs(ctx, spec["max_images"])
+        urls = [higgsfield.upload(p) for p, _ in refs]
+        body = catalog.image_body(spec, scene_prompt(ctx, [note for _, note in refs]), urls, ctx.aspect)
+        res = higgsfield.generate(ctx.image_model, body)
         with tempfile.TemporaryDirectory() as tmp:
             raw = higgsfield.download(res["images"][0]["url"], Path(tmp) / "raw")
             _crop_to_aspect(raw, ctx.aspect, out)
 
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None:
+        """새 인물 기준 이미지. 레퍼런스 인물을 닮지 않게 참고 이미지 없이 글로만 만든다."""
+        spec = catalog.spec("image", model)
+        if spec is None:
+            raise RuntimeError(f"이미지 모델 {model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
+        res = higgsfield.generate(model, catalog.image_body(spec, prompt, [], aspect))
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = higgsfield.download(res["images"][0]["url"], Path(tmp) / "raw")
+            _crop_to_aspect(raw, aspect, out)
+
     def animate(self, image: Path, ctx: SceneContext, out: Path) -> None:
-        spec = VIDEO_MODELS[ctx.video_model]
-        body = {
-            "image_url": higgsfield.upload(image),
-            "prompt": f"Camera: {ctx.motion or 'slow push-in'}. Subtle natural movement, keep the subject and product consistent with the image. No text.",
-            "duration": clip_seconds(ctx.scene, ctx.video_model),
-            **spec["extra"],
-        }
-        res = higgsfield.generate(ctx.video_model, body)
+        spec = catalog.spec("video", ctx.video_model)
+        if spec is None:
+            raise RuntimeError(f"영상 모델 {ctx.video_model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
+        prompt = f"Camera: {ctx.motion or 'slow push-in'}. Subtle natural movement, keep the subject and product consistent with the image. No text."
+        seconds = catalog.clip_seconds(spec, ctx.scene.end - ctx.scene.start)
+        res = higgsfield.generate(ctx.video_model, catalog.video_body(spec, higgsfield.upload(image), prompt, seconds, ctx.aspect))
         higgsfield.download(res["video"]["url"], out)
+
+
+_REF_NOTE = ("the REFERENCE SHOT. Copy ONLY its composition, camera angle and distance, pose and gesture, background layout, "
+             "lighting direction and color grade. Do NOT copy the person in it: not the face, hairstyle, clothing, accessories or any logos.")
+_CAST_NOTE = "the PERSON to show. Use exactly this person's face, hairstyle, skin tone and outfit."
+_HAND_NOTE = "our product held in a real adult hand. It shows the product's TRUE SIZE relative to a hand: keep exactly this scale."
+_PACK_NOTE = "our product packaging. Reproduce its shape, colors and label design exactly."
+_OTHER_NOTE = "another photo of our product, for its look and material."
+
+INTEGRATION = (
+    "The product must look physically photographed in this scene, not composited or pasted on: same light direction, "
+    "color temperature and exposure as the scene, matching soft shadows and contact shadows, realistic packaging material "
+    "(matte or foil sheen, slight creases), fingers naturally wrapping and overlapping its edges, the same perspective, "
+    "depth of field, sharpness and image grain as the rest of the photo."
+)
+STYLE = ("Photorealistic smartphone UGC photo with natural skin texture. No added text, captions, subtitles, watermarks "
+         "or brand logos other than our product's own label.")
+
+
+def _pick_refs(ctx: SceneContext, limit: int) -> list[tuple[Path, str]]:
+    """참고 이미지와 역할 설명. 우선순위: 레퍼런스 장면 → 새 인물 → 손에 든 크기 비교 1장 → 패키지 → 나머지.
+
+    참고 이미지가 너무 많으면 생성 자체가 실패하므로 모델 한도(최대 catalog.REF_IMAGE_LIMIT=5장)를 넘기지 않는다.
+    """
+    hand = [p for p, r in ctx.products if r == "in_hand"]
+    pack = [p for p, r in ctx.products if r == "packaging"]
+    other = [p for p, r in ctx.products if r not in ("in_hand", "packaging")]
+    refs: list[tuple[Path, str]] = []
+    if ctx.ref_frame:
+        refs.append((ctx.ref_frame, _REF_NOTE))
+    if ctx.has_person and ctx.cast_image and ctx.cast_image.exists():
+        refs.append((ctx.cast_image, _CAST_NOTE))
+    refs += [(p, _HAND_NOTE) for p in hand[:1]] + [(p, _PACK_NOTE) for p in pack] + [(p, _OTHER_NOTE) for p in other] + [(p, _HAND_NOTE) for p in hand[1:]]
+    return refs[:limit]
+
+
+def scene_prompt(ctx: SceneContext, notes: list[str]) -> str:
+    """장면 브리프 + 참고 이미지별 역할 + 크기·합성·화질 지시."""
+    parts = [ctx.prompt]
+    if notes:
+        parts.append("Reference images: " + " ".join(f"Image {i} is {n}" for i, n in enumerate(notes, 1)))
+    if ctx.products:
+        parts.append(" ".join(x for x in (ctx.product_scale, "If the product appears, it must keep this real-world size relative to hands and body." if ctx.product_scale else "", INTEGRATION) if x))
+    parts.append(STYLE)
+    return "\n\n".join(parts)
+
+
+def portrait_prompt(character: str) -> str:
+    return (f"Waist-up portrait photo of this person looking at the camera: {character} "
+            "Plain softly lit indoor background, natural daylight, neutral expression. " + STYLE)
 
 
 def _crop_to_aspect(src: Path, aspect: str, out: Path) -> None:

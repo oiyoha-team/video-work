@@ -27,6 +27,7 @@ from schemas import AspectRatio, JobState, Product, Project, ReferenceAnalysis, 
 from sound import engine as sound_engine
 from sound import pipeline as sound_pipeline
 from sound import typecast
+from visual import catalog as visual_catalog
 from visual import engine as visual_engine
 from visual import pipeline as visual_pipeline
 
@@ -44,6 +45,7 @@ async def lifespan(_app: FastAPI):
         }
         if changed:
             store.update_project(p.id, **changed)
+    visual_catalog.start_scheduler()  # 힉스필드 모델 목록 12시간마다 갱신
     yield
 
 
@@ -85,8 +87,6 @@ def status():
         "sound_engine": sound_engine.get_engine().label,
         "visual_engine_id": visual_engine.get_engine().name,
         "sound_engine_id": sound_engine.get_engine().name,
-        "video_models": [{"id": k, "label": v["label"], "min_sec": v["min"], "usd_per_sec": v["usd_per_sec"]} for k, v in visual_engine.VIDEO_MODELS.items()],
-        "default_video_model": config.HIGGSFIELD_VIDEO_MODEL,
         "flow_enabled": flow.is_enabled(),
         "max_video_sec": config.MAX_VIDEO_SEC,
         "aspect_ratios": config.ASPECT_RATIOS,
@@ -488,6 +488,7 @@ def start_production(pid: str):
 @app.get("/api/projects/{pid}/production")
 def get_production(pid: str):
     data = store.get_production(pid).model_dump()
+    data["visual"]["image_model"] = visual_pipeline.image_model(pid)
     data["visual"]["video_model"] = visual_pipeline.video_model(pid)
     return {**data, "status": workflow.production_status(pid)}
 
@@ -498,59 +499,77 @@ def production_estimate(pid: str):
     script = store.get_script(pid)
     if script is None:
         raise ValueError("스크립트가 없습니다.")
-    model = visual_pipeline.video_model(pid)
-    spec = visual_engine.VIDEO_MODELS[model]
-    seconds = sum(visual_engine.clip_seconds(s, model) for s in script.scenes)
     real = visual_engine.get_engine().name == "higgsfield"
-    images = round(len(script.scenes) * visual_engine.IMAGE_USD, 2) if real else 0
-    videos = round(seconds * spec["usd_per_sec"], 2) if real else 0
-    per_scene = {s.id: round(visual_engine.clip_seconds(s, model) * spec["usd_per_sec"], 3) if real else 0 for s in script.scenes}
-    return {"scenes": len(script.scenes), "video_seconds": seconds, "video_model": spec["label"],
-            "images_usd": images, "videos_usd": videos, "total_usd": round(images + videos, 2), "billable": real,
-            "image_usd_each": visual_engine.IMAGE_USD if real else 0, "scene_video_usd": per_scene}
+    if not real:
+        return {"scenes": len(script.scenes), "video_seconds": 0, "video_model": "mock", "image_model": "mock", "images_usd": 0, "videos_usd": 0,
+                "total_usd": 0, "billable": False, "priced": True, "image_usd_each": 0, "scene_video_usd": {s.id: 0 for s in script.scenes}}
+    ispec = visual_catalog.spec("image", visual_pipeline.image_model(pid)) or {}
+    vspec = visual_catalog.spec("video", visual_pipeline.video_model(pid)) or {}
+    secs = {s.id: visual_catalog.clip_seconds(vspec, s.end - s.start) if vspec else 0 for s in script.scenes}
+    img_usd, per_sec = ispec.get("usd"), vspec.get("usd_per_sec")
+    per_scene = {sid: round(sec * (per_sec or 0), 3) for sid, sec in secs.items()}
+    images = round(len(script.scenes) * (img_usd or 0), 2)
+    videos = round(sum(per_scene.values()), 2)
+    return {"scenes": len(script.scenes), "video_seconds": sum(secs.values()), "video_model": vspec.get("label", "-"),
+            "image_model": ispec.get("label", "-"), "images_usd": images, "videos_usd": videos, "total_usd": round(images + videos, 2),
+            "billable": True, "priced": img_usd is not None and per_sec is not None,
+            "image_usd_each": img_usd or 0, "scene_video_usd": per_scene}
 
 
-class VideoModelBody(BaseModel):
-    video_model: str
+@app.get("/api/visual/models")
+def visual_models(refresh: bool = False):
+    """힉스필드 이미지·영상 모델 목록 (12시간마다 자동 갱신, refresh=true면 지금 바로)."""
+    if visual_engine.get_engine().name != "higgsfield":
+        return {"updated_at": None, "image": [], "video": []}
+    cat = visual_catalog.refresh() if refresh else visual_catalog.get()
+    img = [{"id": s["id"], "label": s["label"], "usd": s["usd"], "max_images": s["max_images"]} for s in cat["image"].values()]
+    vid = [{"id": s["id"], "label": s["label"], "usd_per_sec": s["usd_per_sec"], "resolution": s["resolution"],
+            "min_sec": s["dur_enum"][0] if s["dur_enum"] else s["dur_min"], "max_sec": s["dur_enum"][-1] if s["dur_enum"] else s["dur_max"]}
+           for s in cat["video"].values()]
+    return {"updated_at": cat.get("updated_at"), "image": img, "video": vid,
+            "default_image": config.HIGGSFIELD_IMAGE_MODEL, "default_video": config.HIGGSFIELD_VIDEO_MODEL}
+
+
+class ModelBody(BaseModel):
+    image_model: str | None = None
+    video_model: str | None = None
 
 
 @app.put("/api/projects/{pid}/visual/model")
-def set_video_model(pid: str, body: VideoModelBody):
-    if body.video_model not in visual_engine.VIDEO_MODELS:
+def set_models(pid: str, body: ModelBody):
+    if body.image_model and not visual_catalog.spec("image", body.image_model):
+        raise ValueError("지원하지 않는 이미지 모델입니다.")
+    if body.video_model and not visual_catalog.spec("video", body.video_model):
         raise ValueError("지원하지 않는 영상 모델입니다.")
     with store.lock(pid):
         prod = store.get_production(pid)
-        prod.visual.video_model = body.video_model
+        if body.image_model:
+            prod.visual.image_model = body.image_model
+        if body.video_model:
+            prod.visual.video_model = body.video_model
         store.save_production(pid, prod)
     return get_production(pid)
 
 
 @app.get("/api/voices")
-def list_voices(gender: str = "", age: str = "", trait: str = ""):
-    """타입캐스트 목소리 목록 (5단계 목소리 선택용). 성격(trait)은 용도 태그·고유 감정에서 추정한 값."""
+def list_voices(gender: str = "", age: str = ""):
+    """타입캐스트 목소리 목록 (5단계 목소리 선택용): 이름·성별·연령·샘플 음성."""
     if not typecast.is_configured():
         return []
     out = []
     for v in typecast.list_voices():
-        traits = sound_engine.voice_traits(v)
-        if (gender and v.get("gender") != gender) or (age and v.get("age") != age) or (trait and trait not in traits):
+        if (gender and v.get("gender") != gender) or (age and v.get("age") != age):
             continue
         out.append({
             "voice_id": v["voice_id"],
             "name": v["voice_name"].get("kor") or v["voice_name"].get("eng"),
             "gender": v.get("gender"),
             "age": v.get("age"),
-            "traits": traits,
-            "emotions": sound_engine.voice_emotions(v["voice_id"]),
             "use_cases": v.get("use_cases") or [],
             "preview_url": v.get("preview_url"),
         })
     return out
 
-
-@app.get("/api/voices/meta")
-def voices_meta():
-    return {"traits": list(sound_engine.TRAIT_RULES), "emotion_labels": sound_engine.EMOTION_LABELS}
 
 
 class VoiceBody(BaseModel):
@@ -628,6 +647,17 @@ def approve_images(pid: str):
     """[이미지 전체 승인 → 영상화]: 전체 승인 후 영상이 없는 장면을 영상화한다."""
     workflow.approve_images_and_animate(pid)
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/visual/cast")
+def regenerate_cast(pid: str):
+    """새 인물 기준 이미지를 다시 만든다 (같은 인물 설정으로 얼굴만 새로). 이후 장면 이미지를 다시 만들어야 반영된다."""
+    if store.get_project(pid).visual_job.status == "running":
+        raise HTTPException(409, "비주얼 작업이 진행 중입니다.")
+    if not store.get_production(pid).visual.character:
+        raise ValueError("아직 인물 설정이 없습니다. 이미지를 먼저 생성하세요.")
+    visual_pipeline.make_cast(pid)
+    return get_production(pid)
 
 
 @app.post("/api/projects/{pid}/visual/scenes/{scene_id}/{what}")

@@ -64,15 +64,33 @@ def _request(method: str, url: str, body: dict | None = None, headers: dict | No
 _upload_cache: dict[tuple[str, float], tuple[str, float]] = {}
 _upload_lock = threading.Lock()
 UPLOAD_REUSE_SEC = 12 * 3600  # 같은 파일은 12시간 동안 다시 올리지 않는다
-SHRINK_OVER_BYTES = 3_000_000  # 이보다 큰 참고 이미지는 긴 쪽 2048px JPG로 줄여 올린다
+# 참고 이미지는 긴 쪽 2048px 이하로 줄여 올린다. 휴대폰 원본(4032×3024 등)을 그대로 넘기면
+# 용량이 작아도 GPT Image 계열 모델은 생성 자체가 실패한다 (2026-11-18 실측).
+MAX_SIDE = 2048
+SHRINK_OVER_BYTES = 3_000_000
 
 
-def _shrink(path: Path) -> bytes:
+def _image_size(path: Path) -> tuple[int, int] | None:
+    m = re.search(r"Video:.*?, (\d{2,5})x(\d{2,5})", media.run(["-i", str(path)]).stderr)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _needs_shrink(path: Path, size: int) -> bool:
+    if size > SHRINK_OVER_BYTES:
+        return True
+    dims = _image_size(path)
+    return bool(dims and max(dims) > MAX_SIDE)
+
+
+def _shrink(path: Path) -> tuple[bytes, str]:
+    """긴 쪽 2048px로 줄인다. PNG는 투명 배경(누끼컷)을 지키려고 PNG로 둔다."""
+    png = path.suffix.lower() == ".png"
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "ref.jpg"
-        media.check(["-y", "-i", str(path), "-vf", "scale='min(2048,iw)':'min(2048,ih)':force_original_aspect_ratio=decrease",
-                     "-frames:v", "1", "-q:v", "2", str(out)], "참고 이미지 축소")
-        return out.read_bytes()
+        out = Path(tmp) / ("ref.png" if png else "ref.jpg")
+        quality = [] if png else ["-q:v", "2"]
+        media.check(["-y", "-i", str(path), "-vf", f"scale='min({MAX_SIDE},iw)':'min({MAX_SIDE},ih)':force_original_aspect_ratio=decrease",
+                     "-frames:v", "1", *quality, str(out)], "참고 이미지 축소")
+        return out.read_bytes(), "image/png" if png else "image/jpeg"
 
 
 def upload(path: Path) -> str:
@@ -84,8 +102,8 @@ def upload(path: Path) -> str:
             return hit[0]
     content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
     data = path.read_bytes()
-    if content_type.startswith("image/") and len(data) > SHRINK_OVER_BYTES:
-        data, content_type = _shrink(path), "image/jpeg"
+    if content_type.startswith("image/") and _needs_shrink(path, len(data)):
+        data, content_type = _shrink(path)
     slot = _request("POST", f"{BASE}/files/generate-upload-url", {"content_type": content_type})
     put = urllib.request.Request(slot["upload_url"], data=data, method="PUT", headers=slot.get("upload_headers") or {"Content-Type": content_type})
     with urllib.request.urlopen(put, timeout=120):

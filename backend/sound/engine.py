@@ -128,39 +128,12 @@ def pick_voice(voice: Voice) -> dict:
     raise RuntimeError("타입캐스트 목소리 목록이 비어 있습니다.")
 
 
-# 타입캐스트는 '성격' 정보를 주지 않아서, 용도 태그와 목소리 고유 감정에서 성격을 추정한다
-TRAIT_RULES: dict[str, dict] = {
-    "친근함": {"use_cases": {"Conversational"}, "emotions": {"casual"}},
-    "활기참": {"use_cases": {"Ads/Promotion", "TikTok/Reels/Shorts"}, "emotions": {"cheer", "inspire"}},
-    "귀여움": {"use_cases": {"Anime"}, "emotions": {"cute"}},
-    "단호함·신뢰": {"use_cases": {"Announcer", "News Reporter"}, "emotions": {"trustful", "cold"}},
-    "차분함": {"use_cases": {"Documentary", "Audiobook/Storytelling", "Radio/Podcast"}, "emotions": {"soft"}},
-    "또렷함": {"use_cases": {"E-learning/Explainer"}, "emotions": set()},
-    "상냥함": {"use_cases": {"Voicemail/Voice Assistant"}, "emotions": set()},
-    "개성": {"use_cases": {"Game", "Rapper"}, "emotions": {"sarcasm"}},
-}
-
-EMOTION_LABELS = {
-    "smart": "자동 (앞뒤 문맥)", "normal": "기본", "happy": "밝게", "sad": "슬프게", "angry": "화나게",
-    "whisper": "속삭임", "toneup": "톤 업", "tonedown": "톤 다운", "tonemid": "톤 중간", "cheer": "응원",
-    "soft": "부드럽게", "shout": "외치기", "cute": "귀엽게", "sarcasm": "비꼬기", "urgent": "다급하게",
-    "casual": "편하게", "trustful": "신뢰감 있게", "cold": "차갑게", "scream": "비명", "inspire": "격려", "regret": "후회",
-}
-
-
 def voice_emotions(voice_id: str) -> list[str]:
     v = next((x for x in typecast.list_voices() if x["voice_id"] == voice_id), None)
     if not v:
         return []
     model = next((m for m in v.get("models", []) if m.get("version") == config.TYPECAST_MODEL), {})
     return model.get("emotions", [])
-
-
-def voice_traits(v: dict) -> list[str]:
-    use_cases = set(v.get("use_cases") or [])
-    model = next((m for m in v.get("models", []) if m.get("version") == config.TYPECAST_MODEL), {})
-    emotions = set(model.get("emotions", []))
-    return [t for t, rule in TRAIT_RULES.items() if use_cases & rule["use_cases"] or emotions & rule["emotions"]]
 
 
 def voice_label(voice_id: str) -> str:

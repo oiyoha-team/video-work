@@ -13,11 +13,18 @@ import numpy as np
 
 import config
 
+import re
+
 from .text import SENTENCE_END
 
 # 문장은 마침표·물음표·느낌표로 끊는다. 음성 인식이 문장부호를 빠뜨린 경우에만
 # 이만큼 긴 쉼을 문장 끝으로 본다.
 PAUSE_SPLIT_SEC = 1.0
+# 음성 인식이 쉼 없이 빠르게 말한 구간의 문장부호를 통째로 빠뜨리는 경우가 있다 (예: 20초가 한 문장).
+# 그때는 한국어 종결어미(…습니다, …요, …죠, …했다)를 문장 끝으로 보고 마침표를 붙인다.
+_KO_ENDING = re.compile(r"(니다|니까|[어아해에예네세군래게까든지]요|죠|[었았였했됐겠한는된인이]다)$")
+# 그래도 이보다 긴 문장은 단어 사이 쉼이 가장 긴 곳에서 나눈다.
+MAX_SENTENCE_SEC = 8.0
 
 
 @dataclass
@@ -67,17 +74,40 @@ def _read_wav(path: Path) -> np.ndarray:
     return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def _is_ko_ending(word: str) -> bool:
+    w = word.strip()
+    return len(w) >= 2 and bool(_KO_ENDING.search(w))
+
+
+def _emit(group: list, out: list[Utterance], period: bool) -> None:
+    """단어 묶음 → 문장. 너무 길면 가장 긴 쉼에서 둘로 나눈다(재귀)."""
+    if not group:
+        return
+    if len(group) > 1 and group[-1].end - group[0].start > MAX_SENTENCE_SEC:
+        cut = max(range(1, len(group)), key=lambda i: group[i].start - group[i - 1].end)
+        _emit(group[:cut], out, True)
+        _emit(group[cut:], out, period)
+        return
+    text = "".join(w.word for w in group).strip()
+    if not text:
+        return
+    if period and not text.endswith(SENTENCE_END):
+        text += "."
+    out.append(Utterance(round(group[0].start, 2), round(group[-1].end, 2), text))
+
+
 def _group_words(words) -> list[Utterance]:
-    """단어 타임스탬프를 문장 단위(. ? ! 로 끝나는 곳)로 묶는다."""
+    """단어 타임스탬프를 문장 단위로 묶는다.
+
+    1) . ? ! 로 끝나는 곳  2) 1초 넘는 쉼  3) 한국어 종결어미(문장부호가 빠진 경우)
+    4) 그래도 8초가 넘으면 가장 긴 쉼에서 나눈다.
+    """
     utterances: list[Utterance] = []
     buf: list = []
 
-    def flush():
-        if buf:
-            text = "".join(w.word for w in buf).strip()
-            if text:
-                utterances.append(Utterance(round(buf[0].start, 2), round(buf[-1].end, 2), text))
-            buf.clear()
+    def flush(period: bool = False):
+        _emit(list(buf), utterances, period)
+        buf.clear()
 
     for w in words:
         if buf and w.start - buf[-1].end > PAUSE_SPLIT_SEC:
@@ -85,6 +115,8 @@ def _group_words(words) -> list[Utterance]:
         buf.append(w)
         if w.word.strip().endswith(SENTENCE_END):
             flush()
+        elif _is_ko_ending(w.word):
+            flush(period=True)
     flush()
     return utterances
 

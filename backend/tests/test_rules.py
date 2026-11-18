@@ -52,6 +52,19 @@ def test_stt_groups_by_punctuation():
     assert [u.text for u in out] == ["요즘 피부 왜 이래?", "화장이 다 들떠.", "끝"]
 
 
+def test_stt_splits_unpunctuated_speech():
+    """음성 인식이 문장부호 없이 쉼 없이 이어 적은 경우: 종결어미 → 문장 끝, 8초 초과 → 가장 긴 쉼에서 나눔."""
+    w = lambda s, e, word: SimpleNamespace(start=s, end=e, word=word)
+    words = [w(0.0, 0.4, " 운동은"), w(0.5, 0.9, " 주"), w(1.0, 1.4, " 6회를"), w(1.5, 1.9, " 했고"),
+             w(2.0, 2.4, " 한"), w(2.5, 2.9, " 번도"), w(3.0, 3.4, " 하지"), w(3.5, 4.0, " 않았습니다"),
+             w(4.1, 4.5, " 제"), w(4.6, 5.0, " 몸은"), w(5.1, 5.6, " 바뀌었습니다")]
+    assert [u.text for u in _group_words(words)] == ["운동은 주 6회를 했고 한 번도 하지 않았습니다.", "제 몸은 바뀌었습니다."]
+    # 종결어미도 없는 긴 말 → 8초 이하로 나뉜다
+    long = [w(i * 0.5, i * 0.5 + 0.4 + (0.3 if i == 9 else 0), " 그리고") for i in range(20)]
+    out = _group_words(long)
+    assert len(out) >= 2 and all(u.end - u.start <= 8.0 for u in out)
+
+
 def test_markdown_template():
     md = """# 제품 정보 입력서
 

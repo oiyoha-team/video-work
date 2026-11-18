@@ -35,8 +35,6 @@ export interface Status {
   sound_engine: string;
   visual_engine_id: "higgsfield" | "mock";
   sound_engine_id: "typecast" | "system" | "silent";
-  video_models: VideoModel[];
-  default_video_model: string;
   flow_enabled: boolean;
   max_video_sec: number;
   aspect_ratios: AspectRatio[];
@@ -110,11 +108,27 @@ export interface ExportList {
   items: ExportItem[];
 }
 
+// 힉스필드 모델 목록 (서버가 12시간마다 자동 갱신)
+export interface ImageModel {
+  id: string;
+  label: string;
+  usd: number | null; // 한 장 가격 (모르면 null)
+  max_images: number; // 참고 이미지 최대 장수
+}
+
 export interface VideoModel {
   id: string;
   label: string;
+  usd_per_sec: number | null;
+  resolution: string | null;
   min_sec: number;
-  usd_per_sec: number;
+  max_sec: number;
+}
+
+export interface VisualModels {
+  updated_at: string | null;
+  image: ImageModel[];
+  video: VideoModel[];
 }
 
 export interface Estimate {
@@ -125,6 +139,8 @@ export interface Estimate {
   videos_usd: number;
   total_usd: number;
   billable: boolean;
+  priced: boolean; // 고른 모델 가격을 모두 알면 true
+  image_model: string;
   image_usd_each: number;
   scene_video_usd: Record<string, number>;
 }
@@ -134,19 +150,23 @@ export interface TypecastVoice {
   name: string;
   gender: "male" | "female" | null;
   age: string | null;
-  traits: string[]; // 성격 (타입캐스트 용도 태그·고유 감정에서 추정)
-  emotions: string[];
   use_cases: string[];
   preview_url: string | null;
 }
 
-export interface VoicesMeta {
-  traits: string[];
-  emotion_labels: Record<string, string>;
-}
+
 
 export interface Production {
-  visual: { engine: string; video_model: string; scenes: Record<string, VisualAsset> };
+  visual: {
+    engine: string;
+    image_model: string;
+    video_model: string;
+    character: string; // 새 인물 설정 (레퍼런스 인물과 얼굴·헤어·의상이 다름)
+    cast_image: string | null; // 새 인물 기준 이미지
+    cast_v: number;
+    product_scale: string; // 제품 실제 크기
+    scenes: Record<string, VisualAsset>;
+  };
   sound: { engine: string; voice: string; voice_id: string; settings: TTSSettings; scenes: Record<string, SoundAsset> };
   status: {
     total: number;

@@ -14,7 +14,7 @@ import type {
   TTSSettings,
   TypecastVoice,
   UrlCandidate,
-  VoicesMeta,
+  VisualModels,
 } from "./types";
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -122,17 +122,17 @@ export const api = {
   generateImages: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/images`, { scene_ids: scene_ids ?? null }),
   generateVideos: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/videos`, { scene_ids: scene_ids ?? null }),
   approveAllImages: (pid: string) => request("POST", `${P(pid)}/visual/approve`),
+  regenerateCast: (pid: string) => request<Production>("POST", `${P(pid)}/visual/cast`),
   generateSound: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/sound/generate`, { scene_ids: scene_ids ?? null }),
   regenerateLine: (pid: string, sceneId: string, n: number) =>
     request<Production>("POST", `${P(pid)}/sound/scenes/${sceneId}/lines/${n}`),
   setTTSSettings: (pid: string, body: TTSSettings & { voice_id: string }) => request<Production>("PUT", `${P(pid)}/sound/settings`, body),
   previewTTS: (pid: string, body: TTSSettings & { voice_id: string }) =>
     request<{ url: string; text: string }>("POST", `${P(pid)}/sound/preview`, body),
-  voicesMeta: () => request<VoicesMeta>("GET", "/api/voices/meta"),
   estimate: (pid: string) => request<Estimate>("GET", `${P(pid)}/production/estimate`),
-  setVideoModel: (pid: string, video_model: string) => request<Production>("PUT", `${P(pid)}/visual/model`, { video_model }),
-  listVoices: (gender = "", age = "", trait = "") =>
-    request<TypecastVoice[]>("GET", `/api/voices?${new URLSearchParams({ gender, age, trait })}`),
+  visualModels: (refresh = false) => request<VisualModels>("GET", `/api/visual/models${refresh ? "?refresh=true" : ""}`),
+  setModels: (pid: string, body: { image_model?: string; video_model?: string }) => request<Production>("PUT", `${P(pid)}/visual/model`, body),
+  listVoices: () => request<TypecastVoice[]>("GET", "/api/voices"),
   confirmProduction: (pid: string) => request<Project>("POST", `${P(pid)}/production/confirm`),
 
   // Step 6

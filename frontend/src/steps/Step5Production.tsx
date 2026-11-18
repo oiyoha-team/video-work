@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, dataUrl } from "../api";
 import { ErrorBox } from "../components/common";
 import { fmtTime, roleLabel } from "../labels";
-import type { Estimate, JobState, Production, Project, Script, Status, TTSSettings, TypecastVoice, VoicesMeta } from "../types";
+import type { Estimate, JobState, Production, Project, Script, Status, TTSSettings, TypecastVoice, VisualModels } from "../types";
 
 interface Props {
   project: Project;
@@ -102,50 +102,45 @@ function Lightbox({ items, index, onIndex, onClose }: {
 
 type TTSForm = TTSSettings & { voice_id: string };
 
-function TTSPanel({ form, setForm, voices, meta, disabled, onPreview, previewing }: {
+function TTSPanel({ form, setForm, voices, disabled, onPreview, previewing }: {
   form: TTSForm;
   setForm: (f: TTSForm) => void;
   voices: TypecastVoice[];
-  meta: VoicesMeta | null;
   disabled: boolean;
   onPreview: () => void;
   previewing: boolean;
 }) {
   const [gender, setGender] = useState("");
   const [age, setAge] = useState("");
-  const [trait, setTrait] = useState("");
+  const [playing, setPlaying] = useState("");
   const player = useRef<HTMLAudioElement | null>(null);
 
-  const filtered = useMemo(
-    () => voices.filter((v) => (!gender || v.gender === gender) && (!age || v.age === age) && (!trait || v.traits.includes(trait))),
-    [voices, gender, age, trait],
-  );
+  const filtered = useMemo(() => voices.filter((v) => (!gender || v.gender === gender) && (!age || v.age === age)), [voices, gender, age]);
   const current = voices.find((v) => v.voice_id === form.voice_id);
-  const emotions = ["smart", ...(current?.emotions ?? ["normal"])];
-  const label = (e: string) => meta?.emotion_labels[e] ?? e;
 
-  const playSample = (url: string | null | undefined) => {
-    if (!url) return;
+  // 타입캐스트가 주는 샘플 음성을 그대로 들려준다
+  const playSample = (v: TypecastVoice) => {
     player.current?.pause();
-    player.current = new Audio(url);
-    player.current.play().catch(() => {});
+    if (playing === v.voice_id || !v.preview_url) {
+      setPlaying("");
+      return;
+    }
+    player.current = new Audio(v.preview_url);
+    player.current.onended = () => setPlaying("");
+    player.current.play().catch(() => setPlaying(""));
+    setPlaying(v.voice_id);
   };
-  const pickVoice = (id: string) => {
-    const v = voices.find((x) => x.voice_id === id);
-    // 새 목소리가 지원하지 않는 감정이면 자동(문맥)으로 돌린다
-    const emotion = form.emotion === "smart" || v?.emotions.includes(form.emotion) ? form.emotion : "smart";
-    setForm({ ...form, voice_id: id, emotion });
-  };
+  useEffect(() => () => player.current?.pause(), []);
 
   return (
     <div className="tts-panel">
       <div className="tts-filters">
-        <select value={gender} onChange={(e) => setGender(e.target.value)} disabled={disabled}>
+        <select value={gender} onChange={(e) => setGender(e.target.value)}>
           <option value="">성별 전체</option>
           <option value="female">여성</option>
           <option value="male">남성</option>
         </select>
-        <select value={age} onChange={(e) => setAge(e.target.value)} disabled={disabled}>
+        <select value={age} onChange={(e) => setAge(e.target.value)}>
           <option value="">연령 전체</option>
           {Object.entries(AGE_LABEL).map(([k, v]) => (
             <option key={k} value={k}>
@@ -153,33 +148,26 @@ function TTSPanel({ form, setForm, voices, meta, disabled, onPreview, previewing
             </option>
           ))}
         </select>
-        <select value={trait} onChange={(e) => setTrait(e.target.value)} disabled={disabled}>
-          <option value="">성격 전체</option>
-          {meta?.traits.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="row">
-        <select className="grow" value={form.voice_id} onChange={(e) => pickVoice(e.target.value)} disabled={disabled}>
-          {!form.voice_id && <option value="">자동 (화자 페르소나로 선택)</option>}
-          {current && !filtered.includes(current) && <option value={current.voice_id}>{current.name} (현재 · 필터 밖)</option>}
-          {filtered.map((v) => (
-            <option key={v.voice_id} value={v.voice_id}>
-              {v.name} · {v.gender === "female" ? "여" : v.gender === "male" ? "남" : "-"} · {AGE_LABEL[v.age ?? ""] ?? "-"}
-              {v.traits.length ? ` · ${v.traits.slice(0, 3).join("·")}` : ""}
-            </option>
-          ))}
-        </select>
-        <button className="btn small" disabled={!current?.preview_url} onClick={() => playSample(current?.preview_url)} title="목소리 샘플 듣기">
-          ▶ 샘플
-        </button>
       </div>
       <span className="muted small">
-        조건에 맞는 목소리 {filtered.length}개{current ? ` · ${current.name}: ${current.traits.join(", ") || "성격 정보 없음"}` : ""}
+        목소리 {filtered.length}개 · ▶로 샘플을 듣고 이름을 눌러 고르세요 · 선택: <b>{current?.name ?? "자동 (화자 설정으로 선택)"}</b>
       </span>
+      <ul className="voice-list">
+        {filtered.map((v) => (
+          <li key={v.voice_id} className={v.voice_id === form.voice_id ? "on" : ""}>
+            <button className="voice-play" disabled={!v.preview_url} onClick={() => playSample(v)} title="샘플 듣기">
+              {playing === v.voice_id ? "■" : "▶"}
+            </button>
+            <button className="voice-pick" disabled={disabled} onClick={() => setForm({ ...form, voice_id: v.voice_id })}>
+              <b>{v.name}</b>
+              <span className="muted small">
+                {v.gender === "female" ? "여성" : v.gender === "male" ? "남성" : "-"} · {AGE_LABEL[v.age ?? ""] ?? "-"}
+              </span>
+            </button>
+          </li>
+        ))}
+        {!filtered.length && <li className="muted small">조건에 맞는 목소리가 없습니다.</li>}
+      </ul>
 
       <label className="tts-slider">
         <span>배속</span>
@@ -194,48 +182,55 @@ function TTSPanel({ form, setForm, voices, meta, disabled, onPreview, previewing
         />
         <b>{form.tempo.toFixed(2)}x</b>
       </label>
-      <label className="tts-slider">
-        <span>감정</span>
-        <select value={form.emotion} disabled={disabled} onChange={(e) => setForm({ ...form, emotion: e.target.value })}>
-          {emotions.map((e) => (
-            <option key={e} value={e}>
-              {label(e)}
+      <button className="btn small" disabled={disabled || previewing} onClick={onPreview}>
+        {previewing ? "만드는 중…" : "🔊 이 목소리·배속으로 첫 문장 미리 듣기"}
+      </button>
+    </div>
+  );
+}
+
+/** 힉스필드 이미지·영상 모델 선택 (목록은 서버가 12시간마다 갱신) */
+function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRefresh, refreshing }: {
+  models: VisualModels | null;
+  imageModel: string;
+  videoModel: string;
+  disabled: boolean;
+  onChange: (body: { image_model?: string; video_model?: string }) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  if (!models) return <span className="muted small">모델 목록을 불러오는 중…</span>;
+  const updated = models.updated_at ? new Date(models.updated_at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }) : "-";
+  return (
+    <>
+      <label className="field">
+        <span>이미지 모델</span>
+        <select value={imageModel} disabled={disabled} onChange={(e) => onChange({ image_model: e.target.value })}>
+          {models.image.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label} · {m.usd != null ? `장당 $${m.usd}` : "사용량 기준 과금"} · 참고 이미지 {m.max_images}장
             </option>
           ))}
         </select>
       </label>
-      {form.emotion !== "smart" && (
-        <label className="tts-slider">
-          <span>감정 강도</span>
-          <input
-            type="range"
-            min={0}
-            max={2}
-            step={0.1}
-            value={form.emotion_intensity}
-            disabled={disabled}
-            onChange={(e) => setForm({ ...form, emotion_intensity: Number(e.target.value) })}
-          />
-          <b>{form.emotion_intensity.toFixed(1)}</b>
-        </label>
-      )}
-      <label className="tts-slider">
-        <span>음높이</span>
-        <input
-          type="range"
-          min={-12}
-          max={12}
-          step={1}
-          value={form.pitch}
-          disabled={disabled}
-          onChange={(e) => setForm({ ...form, pitch: Number(e.target.value) })}
-        />
-        <b>{form.pitch > 0 ? `+${form.pitch}` : form.pitch}</b>
+      <label className="field">
+        <span>영상 모델</span>
+        <select value={videoModel} disabled={disabled} onChange={(e) => onChange({ video_model: e.target.value })}>
+          {models.video.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label} · {m.usd_per_sec != null ? `초당 $${m.usd_per_sec}` : "가격 미확인"}
+              {m.resolution ? ` · ${m.resolution}` : ""} · {m.min_sec}~{m.max_sec}초
+            </option>
+          ))}
+        </select>
       </label>
-      <button className="btn small" disabled={disabled || previewing} onClick={onPreview}>
-        {previewing ? "만드는 중…" : "🔊 이 설정으로 첫 문장 미리 듣기"}
-      </button>
-    </div>
+      <span className="muted small">
+        힉스필드 모델 {models.image.length + models.video.length}개 · 12시간마다 자동 갱신 (마지막 {updated}){" "}
+        <button className="link-btn" disabled={refreshing} onClick={onRefresh}>
+          {refreshing ? "갱신 중…" : "지금 갱신"}
+        </button>
+      </span>
+    </>
   );
 }
 
@@ -250,7 +245,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [view, setView] = useState<number | null>(null);
   const [voices, setVoices] = useState<TypecastVoice[]>([]);
-  const [meta, setMeta] = useState<VoicesMeta | null>(null);
+  const [models, setModels] = useState<VisualModels | null>(null);
   const [form, setForm] = useState<TTSForm | null>(null);
   const player = useRef<HTMLAudioElement | null>(null);
   const vJob = project.visual_job;
@@ -270,13 +265,17 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
 
   useEffect(() => {
     api.estimate(project.id).then(setEstimate).catch(() => setEstimate(null));
-  }, [project.id, prod?.visual.video_model]);
+  }, [project.id, prod?.visual.image_model, prod?.visual.video_model]);
 
   useEffect(() => {
     if (!typecast) return;
     api.listVoices().then(setVoices).catch(() => setVoices([]));
-    api.voicesMeta().then(setMeta).catch(() => setMeta(null));
   }, [typecast]);
+
+  const higgsfield = status?.visual_engine_id === "higgsfield";
+  useEffect(() => {
+    if (higgsfield) api.visualModels().then(setModels).catch(() => setModels(null));
+  }, [higgsfield]);
 
   // 저장된 TTS 설정으로 폼을 한 번 채운다 (이후엔 사용자가 조절한 값을 유지)
   useEffect(() => {
@@ -287,6 +286,8 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   const viewItems: ViewItem[] = useMemo(() => {
     if (!prod) return [];
     const out: ViewItem[] = [];
+    if (prod.visual.cast_image)
+      out.push({ sceneId: "cast", kind: "image", label: "새 인물", src: `${dataUrl(project.id, prod.visual.cast_image)}?v=${prod.visual.cast_v}` });
     scenes.forEach((s, i) => {
       const va = prod.visual.scenes[s.id];
       const no = `#${String(i + 1).padStart(2, "0")}`;
@@ -413,31 +414,52 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               <span>영상 클립</span>
             </div>
           </div>
-          {status?.visual_engine_id === "higgsfield" && (
+          {higgsfield && (
             <div className="engine-options">
-              <label className="field">
-                <span>영상 모델</span>
-                <select
-                  value={prod.visual.video_model}
-                  disabled={vRunning || lock}
-                  onChange={(e) => run("모델 변경 중", async () => setProd(await api.setVideoModel(project.id, e.target.value)))}
-                >
-                  {status.video_models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label} · 초당 ${m.usd_per_sec} · 최소 {m.min_sec}초
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ModelPicker
+                models={models}
+                imageModel={prod.visual.image_model}
+                videoModel={prod.visual.video_model}
+                disabled={vRunning || lock}
+                onChange={(body) => run("모델 변경 중", async () => setProd(await api.setModels(project.id, body)))}
+                onRefresh={() => run("models", async () => setModels(await api.visualModels(true)))}
+                refreshing={busy === "models"}
+              />
               {estimate && (
                 <div className="estimate">
                   전체 예상 비용 <b>{usd(estimate.total_usd)}</b>
                   <span className="muted small">
                     {" "}
                     = 이미지 {usd(estimate.images_usd)} + 영상 {usd(estimate.videos_usd)} (총 {estimate.video_seconds}초)
+                    {!estimate.priced && " · 가격을 확인할 수 없는 모델이 있어 실제 비용은 더 나올 수 있습니다"}
                   </span>
                 </div>
               )}
+            </div>
+          )}
+          {prod.visual.cast_image && (
+            <div className="cast-box">
+              <img
+                src={url(prod.visual.cast_image, prod.visual.cast_v)}
+                alt="새 인물"
+                onClick={() => setView(viewItems.findIndex((x) => x.sceneId === "cast"))}
+                title="크게 보기"
+              />
+              <div className="stack-tight">
+                <b className="small">새 인물</b>
+                <span className="muted small">레퍼런스 인물과 얼굴·헤어·의상을 바꾼 인물입니다. 모든 장면에 이 인물이 나옵니다.</span>
+                {prod.visual.product_scale && <span className="muted small">제품 크기 기준: {prod.visual.product_scale}</span>}
+                <button
+                  className="btn small"
+                  disabled={vRunning || lock}
+                  onClick={() => {
+                    if (confirmCost("새 인물을 다시 만듭니다. 장면에 반영하려면 이후 이미지를 다시 만들어야 합니다.", estimate?.image_usd_each ?? 0))
+                      run("cast", async () => setProd(await api.regenerateCast(project.id)));
+                  }}
+                >
+                  {busy === "cast" ? "만드는 중…" : "↻ 인물 다시 만들기"}
+                </button>
+              </div>
             </div>
           )}
           <TrackProgress job={vJob} />
@@ -480,13 +502,11 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
             </div>
             <div>
               <b className="voice-name">{prod.sound.voice || "자동 선택"}</b>
-              <span>
-                저장된 설정 · {prod.sound.settings.tempo.toFixed(2)}x · {meta?.emotion_labels[prod.sound.settings.emotion] ?? prod.sound.settings.emotion}
-              </span>
+              <span>저장된 목소리 · {prod.sound.settings.tempo.toFixed(2)}x</span>
             </div>
           </div>
           {typecast ? (
-            <TTSPanel form={form} setForm={setForm} voices={voices} meta={meta} disabled={sRunning || lock} onPreview={preview} previewing={busy === "preview"} />
+            <TTSPanel form={form} setForm={setForm} voices={voices} disabled={sRunning || lock} onPreview={preview} previewing={busy === "preview"} />
           ) : (
             <p className="muted small">타입캐스트 키가 없어 임시 음성으로 만듭니다 (목소리·배속 조절은 타입캐스트에서만 됩니다).</p>
           )}
