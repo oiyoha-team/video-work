@@ -79,6 +79,8 @@ def status():
     return {
         "platform": config.PLATFORM,
         "launcher": config.LAUNCHER,
+        "app_version": config.APP_VERSION,
+        "root_dir": str(config.ROOT_DIR),  # 실행기가 '같은 폴더·같은 버전의 서버인지' 확인할 때 쓴다
         "claude_configured": claude_client.is_configured(),
         "claude_model": config.CLAUDE_MODEL,
         "stt_engine": config.STT_ENGINE,
@@ -772,6 +774,17 @@ def flow_webhook(body: FlowWebhook, x_webhook_secret: str = Header(default="")):
 
 
 # ── 정적 파일 ─────────────────────────────────────────────
+
+@app.middleware("http")
+async def _no_stale_page(request: Request, call_next):
+    """화면 첫 페이지(index.html)는 매번 새로 확인하게 한다 (업데이트 후 브라우저가 예전 화면을 보여 주지 않게).
+    /assets/ 의 파일은 이름에 내용 해시가 붙어 있어 캐시해도 안전하다."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith(("/assets/", "/data/", "/api/")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 
 app.mount("/data", StaticFiles(directory=config.DATA_DIR), name="data")
 if config.FRONTEND_DIST.exists():

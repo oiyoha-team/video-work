@@ -170,7 +170,7 @@ export default function App() {
           <span className="brand-mark">O</span>
           <div>
             <div className="brand-title">퍼포먼스 영상 자동화</div>
-            <div className="brand-sub">기획 자동화 → 영상 자동화</div>
+            <div className="brand-sub">기획 자동화 → 영상 자동화{status ? ` · v${status.app_version}` : ""}</div>
           </div>
         </div>
         {project && <div className="project-name">{project.name}</div>}

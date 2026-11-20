@@ -128,6 +128,7 @@ ok "Python 패키지"
 step 4 "화면(프론트엔드) 빌드"
 (cd "$ROOT/frontend" && npm install --no-audit --no-fund && npm run build) || fail "화면 빌드에 실패했습니다."
 ok "화면 빌드 (frontend/dist)"
+"$VPY" "$ROOT/backend/updater.py" --mark  # 지금 상태를 최신으로 기록 (실행 때 다시 빌드하지 않게)
 
 # ── 5. 설정 파일 ──
 step 5 "설정 파일 (.env)"
@@ -181,6 +182,9 @@ PYEOF
     warn "워크스페이스 ID가 비어 있습니다."
   fi
 fi
+
+# 영상 자동화 키 (힉스필드·타입캐스트) — 비어 있으면 물어본다. 새 버전에서 생긴 설정 칸도 채운다
+if [ "$AUTO" != "--auto" ]; then "$VPY" "$ROOT/backend/updater.py" --keys; fi
 
 # ── 6. 음성 인식 모델 ──
 step 6 "음성 인식 모델 준비"

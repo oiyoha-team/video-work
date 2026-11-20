@@ -11,10 +11,6 @@ if [ ! -x .venv/bin/python ]; then
   echo "아직 설치가 되어 있지 않습니다. 먼저 1_설치하기.command 를 실행하세요."
   read -r -p "엔터를 누르면 종료합니다" _; exit 1
 fi
-if [ ! -f frontend/dist/index.html ]; then
-  echo "화면 빌드가 없습니다. 1_설치하기.command 를 다시 실행하세요."
-  read -r -p "엔터를 누르면 종료합니다" _; exit 1
-fi
-
+# 화면 빌드가 없거나 오래됐으면 run.py가 실행 전에 다시 만든다 (새 버전 ZIP을 덮어쓴 경우)
 # 서버 실행 + 준비되면 브라우저 자동 열기 (이미 실행 중이면 브라우저만 엶)
 cd backend && exec ../.venv/bin/python run.py

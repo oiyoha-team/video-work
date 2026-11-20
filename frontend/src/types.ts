@@ -27,6 +27,7 @@ export const JOB_FIELDS = ["analysis_job", "script_job", "visual_job", "sound_jo
 export interface Status {
   platform: "windows" | "mac" | "linux";
   launcher: string;
+  app_version: string;
   claude_configured: boolean;
   claude_model: string;
   stt_engine: string;

@@ -392,6 +392,14 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   return (
     <div className="stack">
       {error && <ErrorBox message={error} onClose={() => setError("")} />}
+      {status && (status.visual_engine_id === "mock" || status.sound_engine_id !== "typecast") && (
+        <div className="alert warn small">
+          {status.visual_engine_id === "mock" && "힉스필드 API 키가 없어 이미지·영상을 임시 엔진(레퍼런스 화면 + 줌 효과)으로 만듭니다. "}
+          {status.sound_engine_id !== "typecast" && "타입캐스트 API 키가 없어 음성을 컴퓨터 기본 음성으로 만듭니다. "}
+          프로그램 폴더의 .env 파일에 키를 넣거나, 프로그램을 다시 실행해 키를 입력한 뒤 사용하세요.
+          (이 상태에서는 모델 선택 칸이 보이지 않고, 이미지 품질 개선도 적용되지 않습니다.)
+        </div>
+      )}
 
       <section className="tracks">
         <div className="card track">

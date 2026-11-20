@@ -182,6 +182,7 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "npm 패키지 설치에 실패했
 if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "화면 빌드에 실패했습니다." }
 Pop-Location
 Ok "화면 빌드 (frontend\dist)"
+& $VenvPy (Join-Path $Root 'backend\updater.py') --mark  # 지금 상태를 최신으로 기록 (실행 때 다시 빌드하지 않게)
 
 # ── 5. 설정 파일 ─────────────────────────────────────────────
 Step 5 "설정 파일 (.env)"
@@ -227,6 +228,9 @@ if ($envText -match '(?m)^ANTHROPIC_API_KEY=sk-ant-usr-' -and $envText -notmatch
         Warn "워크스페이스 ID가 비어 있습니다."
     }
 }
+
+# 영상 자동화 키 (힉스필드·타입캐스트) — 비어 있으면 물어본다. 새 버전에서 생긴 설정 칸도 채운다
+if (-not $Auto) { & $VenvPy (Join-Path $Root 'backend\updater.py') --keys }
 
 # ── 6. 음성 인식 모델 ─────────────────────────────────────────────
 Step 6 "음성 인식 모델 준비"

@@ -32,13 +32,26 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
 
 # 영상 자동화 엔진 — 키가 있으면 실제 서비스, 없으면 mock / OS 음성으로 동작
 HIGGSFIELD_API_KEY = os.getenv("HIGGSFIELD_API_KEY", "").strip()  # "키ID:시크릿"
+from version import APP_VERSION  # noqa: E402,F401 — 화면 상단에 표시 (버전은 version.py에서 올린다)
+
 HIGGSFIELD_IMAGE_MODEL = os.getenv("HIGGSFIELD_IMAGE_MODEL", "marketing-studio/image/flare").strip()
 HIGGSFIELD_VIDEO_MODEL = os.getenv("HIGGSFIELD_VIDEO_MODEL", "wan/v2.7/image-to-video").strip()  # 기획안별로 화면에서 변경 가능
 TYPECAST_API_KEY = os.getenv("TYPECAST_API_KEY", "").strip()
 TYPECAST_MODEL = os.getenv("TYPECAST_MODEL", "ssfm-v31").strip()
 
-VISUAL_ENGINE = (os.getenv("VISUAL_ENGINE", "").strip().lower() or ("higgsfield" if HIGGSFIELD_API_KEY else "mock"))  # higgsfield | mock
-SOUND_ENGINE = (os.getenv("SOUND_ENGINE", "").strip().lower() or ("typecast" if TYPECAST_API_KEY else "system"))  # typecast | system | silent
+# 키가 있으면 항상 실제 엔진을 쓴다. 예전 .env(2026-10 배포본)에 VISUAL_ENGINE=mock / SOUND_ENGINE=system 이
+# 적혀 있어, 키를 넣어도 임시 엔진(레퍼런스 화면 + 줌)으로 돌며 모델 선택 칸도 안 보이던 문제가 있었다.
+# 테스트로 일부러 임시 엔진을 쓰려면 FORCE_MOCK_ENGINES=1.
+_FORCE_MOCK = os.getenv("FORCE_MOCK_ENGINES", "").strip() in ("1", "true", "yes")
+_sound = os.getenv("SOUND_ENGINE", "").strip().lower()
+if HIGGSFIELD_API_KEY and not _FORCE_MOCK:
+    VISUAL_ENGINE = "higgsfield"
+else:
+    VISUAL_ENGINE = "mock"
+if TYPECAST_API_KEY and not _FORCE_MOCK:
+    SOUND_ENGINE = "typecast"
+else:
+    SOUND_ENGINE = _sound if _sound in ("system", "silent") else "system"  # typecast | system | silent
 
 # Flow 메신저 승인 알림 (추후 연동) — 비어 있으면 앱 화면 알림만 사용
 FLOW_API_URL = os.getenv("FLOW_API_URL", "").strip()
