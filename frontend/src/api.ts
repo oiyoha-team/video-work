@@ -119,10 +119,17 @@ export const api = {
   startProduction: (pid: string) => request<Project>("POST", `${P(pid)}/production/start`),
   getProduction: (pid: string) => request<Production>("GET", `${P(pid)}/production`),
   // scene_ids를 주면 그 장면만, 없으면 전체 (영상은 '승인됐지만 영상이 없는 장면')
-  generateImages: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/images`, { scene_ids: scene_ids ?? null }),
-  generateVideos: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/visual/videos`, { scene_ids: scene_ids ?? null }),
+  // instruction: 수정 지시 (선택한 장면 모두에 반영)
+  generateImages: (pid: string, scene_ids?: string[], instruction = "") =>
+    request("POST", `${P(pid)}/visual/images`, { scene_ids: scene_ids ?? null, instruction }),
+  generateVideos: (pid: string, scene_ids?: string[], instruction = "") =>
+    request("POST", `${P(pid)}/visual/videos`, { scene_ids: scene_ids ?? null, instruction }),
   approveAllImages: (pid: string) => request("POST", `${P(pid)}/visual/approve`),
-  regenerateCast: (pid: string) => request<Production>("POST", `${P(pid)}/visual/cast`),
+  regenerateCast: (pid: string) => request("POST", `${P(pid)}/visual/cast`),
+  chooseVersion: (pid: string, sceneId: string, keep: "new" | "prev") =>
+    request<Production>("POST", `${P(pid)}/visual/scenes/${sceneId}/choose`, { keep }),
+  resetProduction: (pid: string, what: "visual" | "sound" | "all") => request<Project>("POST", `${P(pid)}/production/reset`, { what }),
+  resetProject: (pid: string, keep_product: boolean) => request<Project>("POST", `${P(pid)}/reset`, { keep_product }),
   generateSound: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/sound/generate`, { scene_ids: scene_ids ?? null }),
   regenerateLine: (pid: string, sceneId: string, n: number) =>
     request<Production>("POST", `${P(pid)}/sound/scenes/${sceneId}/lines/${n}`),

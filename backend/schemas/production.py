@@ -2,14 +2,31 @@
 from pydantic import BaseModel, Field
 
 
+class VisualVersion(BaseModel):
+    """다시 만들기 전 결과 (이전/새 결과를 비교해 고를 수 있게 보관)."""
+    image: str | None = None
+    video: str | None = None
+    prompt: str = ""
+    motion: str = ""
+    video_prompt: str = ""
+    image_approved: bool = False
+    instruction: str = ""
+    v: int = 0
+
+
 class VisualAsset(BaseModel):
-    prompt: str = ""  # 이미지 생성 프롬프트 (장면 분석 + 자사 대사 + 제품 이미지 기반, 영어)
+    prompt: str = ""  # 이미지 생성 프롬프트 (영어). 수정 지시를 받으면 Claude가 고쳐 쓴다
     motion: str = ""  # 이미지→영상 변환 시 카메라 움직임
+    video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트 (비우면 motion으로 만든다)
     image: str | None = None  # 프로젝트 폴더 기준 상대경로
-    has_person: bool = True  # 이 장면에 인물이 나오는지 (새 인물 참고 이미지를 넣을지)
+    has_person: bool = True  # 이 장면에 인물이 나오는지 (인물 기준 이미지를 넣을지)
     image_approved: bool = False  # [이미지 전체 승인] 후에만 영상화한다 (이미지를 다시 만들면 그 장면은 다시 승인 필요)
     video: str | None = None
     error: str = ""
+    instruction: str = ""  # 마지막으로 반영한 수정 지시 (사용자가 입력, 한국어)
+    prev: VisualVersion | None = None  # 다시 만들기 전 결과 — 사용자가 이전/새 결과 중 고를 때까지 보관
+    busy: str = ""  # 진행 표시: "" | queued | image | video
+    busy_since: float = 0
     v: int = 0  # 캐시 무효화용 버전
 
 
@@ -26,13 +43,20 @@ class SoundAsset(BaseModel):
     lines: list[SoundLine] = Field(default_factory=list)  # 장면 대사의 문장별 음성 (대사 없으면 빈 목록)
     duration: float = 0  # 문장 음성 길이 합계
     error: str = ""
+    busy: str = ""  # "" | queued | audio
+    busy_since: float = 0
     v: int = 0
 
 
 class VisualTrack(BaseModel):
     engine: str = ""
-    character: str = ""  # 새 인물 설정 (레퍼런스 인물과 성별·연령대·체형만 비슷하고 얼굴·헤어·의상은 다름, 영어)
-    cast_image: str | None = None  # 새 인물 기준 이미지 (모든 장면에서 같은 사람으로 보이게 참고 이미지로 넣음)
+    # ── 레퍼런스에서 '빌려 온' 것 (그대로 복사하지 않음) ──
+    style_guide: str = ""  # 그림체·질감·색감·조명·카메라 언어 (영어, 모든 장면 공통)
+    world: str = ""  # 새로 정한 배경·공간 (레퍼런스와 다른 장소, 영어)
+    concept_note: str = ""  # 레퍼런스에서 가져온 것 / 새로 만든 것 요약 (화면 표시용, 한국어)
+    anchor_scene: str = ""  # 기준 장면 (첫 장면). 나머지 장면은 이 이미지의 그림체·인물·세계관을 따른다
+    character: str = ""  # 새 인물 설정 (영어)
+    cast_image: str | None = None  # 인물 기준 이미지 (첫 장면에 인물이 있으면 그 장면, 없으면 첫 장면 그림체로 만든 인물)
     cast_v: int = 0
     product_scale: str = ""  # 손에 든 사진으로 읽은 제품 실제 크기 (영어)
     product_roles: dict[str, str] = Field(default_factory=dict)  # {제품 사진 경로: in_hand | packaging | other}

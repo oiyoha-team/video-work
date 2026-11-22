@@ -6,6 +6,13 @@ export interface JobState {
   status: "idle" | "running" | "done" | "error";
   progress: number;
   message: string;
+  // 진행 표시 (없으면 막대만 움직임)
+  started_at?: number; // epoch 초
+  eta_min?: number | null; // 남은 시간 범위 (초)
+  eta_max?: number | null;
+  eta_at?: number; // eta 계산 시각
+  done?: number;
+  total?: number;
 }
 
 export interface Project {
@@ -62,13 +69,30 @@ export interface Gate {
 }
 
 // ── Step 5 · 6 ──
-export interface VisualAsset {
-  prompt: string; // 장면 브리프 (장면 분석 + 자사 대사 + 제품 이미지 기반)
-  motion: string;
+export interface VisualVersion {
   image: string | null;
+  video: string | null;
+  prompt: string;
+  motion: string;
+  video_prompt: string;
+  image_approved: boolean;
+  instruction: string;
+  v: number;
+}
+
+export interface VisualAsset {
+  prompt: string; // 장면 이미지 프롬프트 (영어)
+  motion: string;
+  video_prompt: string;
+  image: string | null;
+  has_person: boolean;
   image_approved: boolean; // [이미지 전체 승인] 후 영상화
   video: string | null;
-  error: string;
+  error: string; // 무엇 실패 / 원인: … / 해결: … / [원문] … (줄바꿈으로 구분)
+  instruction: string; // 마지막으로 반영한 수정 지시
+  prev: VisualVersion | null; // 다시 만들기 전 결과 (이전/새 비교)
+  busy: "" | "queued" | "image" | "video";
+  busy_since: number;
   v: number;
 }
 
@@ -91,6 +115,8 @@ export interface SoundAsset {
   lines: SoundLine[]; // 문장 하나 = 음성 파일 하나
   duration: number;
   error: string;
+  busy: "" | "queued" | "audio";
+  busy_since: number;
   v: number;
 }
 
@@ -162,8 +188,12 @@ export interface Production {
     engine: string;
     image_model: string;
     video_model: string;
+    style_guide: string; // 레퍼런스에서 빌려 온 그림체 (영어)
+    world: string; // 새 배경·공간 (영어)
+    concept_note: string; // 레퍼런스에서 가져온 것 / 새로 만든 것 (한국어)
+    anchor_scene: string; // 기준 장면 (첫 장면)
     character: string; // 새 인물 설정 (레퍼런스 인물과 얼굴·헤어·의상이 다름)
-    cast_image: string | null; // 새 인물 기준 이미지
+    cast_image: string | null; // 인물 기준 이미지
     cast_v: number;
     product_scale: string; // 제품 실제 크기
     scenes: Record<string, VisualAsset>;
@@ -176,8 +206,10 @@ export interface Production {
     videos: number;
     audios: number;
     lines: number;
+    comparing: number; // 이전/새 결과를 아직 고르지 않은 장면
     ready: boolean;
   };
+  typical: Record<"image" | "video" | "line" | "revise", [number, number]>; // 한 건당 보통 걸리는 시간 (초)
 }
 
 // ── Step 1 ──

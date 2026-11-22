@@ -9,6 +9,13 @@ class JobState(BaseModel):
     status: Literal["idle", "running", "done", "error"] = "idle"
     progress: float = 0  # 0~1
     message: str = ""
+    # 진행 표시 (화면의 로딩바·남은 시간)
+    started_at: float = 0  # 시작 시각 (epoch 초)
+    eta_min: float | None = None  # 남은 시간 범위 (초). 정확히 알 수 없으면 최소~최대로 표시
+    eta_max: float | None = None
+    eta_at: float = 0  # eta를 계산한 시각 (화면이 이후 흐른 시간만큼 줄여서 보여 준다)
+    done: int = 0  # 끝난 작업 수 / 전체
+    total: int = 0
 
 
 class Project(BaseModel):

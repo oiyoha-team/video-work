@@ -7,6 +7,8 @@
 import json
 import traceback
 
+from errors import explain
+
 from llm import claude_client
 from llm.claude_client import strict_object
 from schemas import JobState, Product, ReferenceAnalysis, Scene, Script, ScriptMeta, Voice
@@ -181,7 +183,7 @@ def run_generate(project_id: str) -> None:
         gates.open_gate(project_id, "script", f"「{script.meta.title}」 · 장면 {len(script.scenes)}개\n훅: 「{hook}」")
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        store.update_project(project_id, script_job=JobState(status="error", message=str(e) or e.__class__.__name__))
+        store.update_project(project_id, script_job=JobState(status="error", message=explain(e, "스크립트 작성")))
 
 
 # ── 내보내기 ─────────────────────────────────────────────

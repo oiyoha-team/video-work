@@ -2,6 +2,7 @@
 import json
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -39,16 +40,30 @@ def product_dir(project_id: str) -> Path:
     return project_dir(project_id) / "product"
 
 
+def _retry(fn, tries: int = 40):
+    """Windows에서는 다른 스레드가 읽는 중이거나 OneDrive·백신이 잠깐 잡고 있으면 파일 교체가 거부된다 → 잠시 후 다시."""
+    for i in range(tries):
+        try:
+            return fn()
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.05)
+
+
 def write_json(path: Path, data: BaseModel | dict | list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = data.model_dump_json(indent=2) if isinstance(data, BaseModel) else json.dumps(data, ensure_ascii=False, indent=2)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex[:8]}.tmp")  # 동시에 저장해도 임시 파일이 겹치지 않게
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    try:
+        _retry(lambda: tmp.replace(path))
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def read_json(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(_retry(lambda: path.read_text(encoding="utf-8")))
 
 
 # ── project.json ─────────────────────────────────────────────

@@ -762,3 +762,57 @@ a.btn { text-decoration: none; color: var(--text); }
 .cast-box { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
 .cast-box img { width: 72px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 6px; cursor: zoom-in; flex: none; }
 .stack-tight { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+/* ── 진행 표시 (로딩바 · 경과 · 남은 시간) ── */
+.progress-line { display: flex; flex-direction: column; gap: 5px; width: 100%; }
+.progress-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.progress-meta .eta { color: var(--accent-strong); }
+.progress.indeterminate .progress-bar { width: 35%; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.spinner.tiny { width: 12px; height: 12px; border-width: 2px; display: inline-block; vertical-align: -2px; }
+.btn .spinner.tiny { margin-right: 6px; }
+.media-box { position: relative; }
+.busy-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: rgba(10, 20, 12, 0.62); color: #fff; text-align: center; padding: 6px;
+}
+.busy-overlay .spinner { width: 26px; height: 26px; border-color: rgba(255, 255, 255, 0.25); border-top-color: #fff; }
+.busy-overlay.queued { background: rgba(10, 20, 12, 0.4); }
+.tiny-text { font-size: 10px; opacity: 0.85; }
+.audio-busy { display: flex; align-items: center; gap: 6px; color: var(--accent-strong); }
+
+/* ── 다시 만들기 (수정 지시) · 이전/새 비교 ── */
+.regen-btn { margin-top: 6px; width: 100%; }
+.regen-form {
+  margin-top: 6px; display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft);
+}
+.regen-form textarea, .selection-bar textarea { width: 100%; font-size: 13px; }
+.compare { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 2px solid var(--accent); border-radius: 8px; }
+.compare-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.compare-item { display: flex; flex-direction: column; gap: 4px; }
+.compare-item .media-box { max-height: 150px; }
+.compare-tag {
+  position: absolute; top: 4px; left: 4px; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6); color: #fff;
+}
+.instruction-note { color: var(--accent-strong); }
+.anchor-chip { background: var(--accent); color: #fff; border-color: var(--accent); }
+.concept-box { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.concept-box summary { cursor: pointer; }
+.selection-bar .grow { flex: 1 1 420px; }
+
+/* ── 오류 (원인 · 해결) ── */
+.error-text { display: flex; flex-direction: column; gap: 2px; white-space: pre-wrap; word-break: break-word; }
+.error-text .error-head { font-weight: 700; }
+.error-raw summary { cursor: pointer; font-size: 11px; opacity: 0.8; }
+.error-raw code { display: block; font-size: 11px; opacity: 0.8; word-break: break-all; white-space: pre-wrap; }
+.cell-error { word-break: break-word; padding: 6px; border-radius: 6px; background: var(--error-bg); }
+
+/* ── 초기화 ── */
+.btn.danger { border-color: var(--error-text); color: var(--error-text); }
+.btn.danger:not(.ghost) { background: var(--error-text); color: #fff; }
+.btn.danger:hover:not(:disabled) { border-color: var(--error-text); filter: brightness(1.08); }
+.reset-card { padding: 10px 14px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.modal { max-width: 480px; width: 100%; display: flex; flex-direction: column; gap: 10px; }

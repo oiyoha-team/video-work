@@ -1,13 +1,15 @@
 """②-A 비주얼 엔진. 실제 이미지 생성/이미지-투-비디오 AI를 붙일 때 이 인터페이스를 구현한다.
 
-실제 엔진은 ctx.prompt(장면 브리프)로 이미지를 만들고, 참고 이미지로 ctx.ref_frame(레퍼런스 장면 — 구도만),
-ctx.cast_image(새 인물 — 얼굴·헤어·의상), ctx.products(제품 사진 — 손에 든 크기 비교·패키지)를 역할과 함께 넘긴다.
+실제 엔진은 그림체(style_guide)·세계관(world)·장면 브리프(prompt)로 이미지를 만든다. 참고 이미지:
+- 기준 장면(첫 장면): 레퍼런스 영상의 그림체 견본(style_frames — 인물·배경·구도는 쓰지 않음) + 제품 사진
+- 나머지 장면: 기준 장면 이미지(anchor_image — 그림체·세계관·인물) + 인물 기준 이미지 + 제품 사진
+레퍼런스 장면을 그대로 넘기지 않으므로 레퍼런스와 같은 장면·인물·배경이 나오지 않는다.
 
 - HiggsfieldEngine: 이미지 → 영상. 모델은 5단계에서 고르며 목록은 catalog.py가 12시간마다 갱신한다
 - MockVisualEngine: 키가 없을 때. 레퍼런스 프레임 + ffmpeg 줌/팬 효과 (전체 흐름 테스트용)
 """
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -22,15 +24,21 @@ from . import catalog, higgsfield
 class SceneContext:
     scene: Scene
     aspect: str
-    ref_frame: Path | None  # 대응 레퍼런스 구간 프레임
+    ref_frame: Path | None  # 대응 레퍼런스 구간 프레임 (임시 엔진 전용 — 실제 생성에는 넘기지 않는다)
     products: list[tuple[Path, str]]  # (제품 사진, 역할 in_hand|packaging|other) — 장면에 배정하지 않는 참고 자료
     prompt: str  # 장면 브리프 (영어 이미지 프롬프트)
     motion: str  # 이미지→영상 카메라 움직임
     has_person: bool = True
-    cast_image: Path | None = None  # 새 인물 기준 이미지
+    cast_image: Path | None = None  # 인물 기준 이미지
+    cast_is_anchor: bool = False  # 인물 기준 = 기준 장면 (따로 넣을 필요 없음)
     product_scale: str = ""  # 제품 실제 크기 (영어)
     image_model: str = config.HIGGSFIELD_IMAGE_MODEL
     video_model: str = config.HIGGSFIELD_VIDEO_MODEL
+    style_guide: str = ""  # 레퍼런스에서 빌려 온 그림체 (영어)
+    world: str = ""  # 새 배경·공간 (영어)
+    style_frames: list[Path] = field(default_factory=list)  # 기준 장면을 만들 때만: 레퍼런스 그림체 견본
+    anchor_image: Path | None = None  # 기준 장면 이미지 (기준 장면 자신을 만들 때는 None)
+    video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트
 
 
 class VisualEngine(Protocol):
@@ -38,7 +46,7 @@ class VisualEngine(Protocol):
     label: str
 
     def generate_image(self, ctx: SceneContext, out: Path) -> None: ...
-    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None: ...
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path, refs: list[tuple[Path, str]] | None = None) -> None: ...
     def animate(self, image: Path, ctx: SceneContext, out: Path) -> None: ...
 
 
@@ -56,7 +64,7 @@ class MockVisualEngine:
             args = ["-y", "-f", "lavfi", "-i", f"color=c=0x2f8f4e:s={w}x{h}", "-frames:v", "1", str(out)]
         media.check(args, "장면 이미지 생성")
 
-    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None:
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path, refs: list[tuple[Path, str]] | None = None) -> None:
         w, h = media.RESOLUTIONS[aspect]
         out.parent.mkdir(parents=True, exist_ok=True)
         media.check(["-y", "-f", "lavfi", "-i", f"color=c=0x8a8f88:s={w}x{h}", "-frames:v", "1", str(out)], "인물 기준 이미지")
@@ -105,12 +113,16 @@ class HiggsfieldEngine:
             raw = higgsfield.download(res["images"][0]["url"], Path(tmp) / "raw")
             _crop_to_aspect(raw, ctx.aspect, out)
 
-    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path) -> None:
-        """새 인물 기준 이미지. 레퍼런스 인물을 닮지 않게 참고 이미지 없이 글로만 만든다."""
+    def generate_portrait(self, prompt: str, aspect: str, model: str, out: Path, refs: list[tuple[Path, str]] | None = None) -> None:
+        """인물 기준 이미지. 참고 이미지는 그림체 기준(기준 장면)만 넣는다 — 레퍼런스 인물은 넣지 않는다."""
         spec = catalog.spec("image", model)
         if spec is None:
             raise RuntimeError(f"이미지 모델 {model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
-        res = higgsfield.generate(model, catalog.image_body(spec, prompt, [], aspect))
+        refs = (refs or [])[: spec["max_images"]]
+        urls = [higgsfield.upload(p) for p, _ in refs]
+        if refs:
+            prompt += "\n\nReference images: " + " ".join(f"Image {i} is {n}" for i, (_, n) in enumerate(refs, 1))
+        res = higgsfield.generate(model, catalog.image_body(spec, prompt, urls, aspect))
         with tempfile.TemporaryDirectory() as tmp:
             raw = higgsfield.download(res["images"][0]["url"], Path(tmp) / "raw")
             _crop_to_aspect(raw, aspect, out)
@@ -119,60 +131,75 @@ class HiggsfieldEngine:
         spec = catalog.spec("video", ctx.video_model)
         if spec is None:
             raise RuntimeError(f"영상 모델 {ctx.video_model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
-        prompt = f"Camera: {ctx.motion or 'slow push-in'}. Subtle natural movement, keep the subject and product consistent with the image. No text."
         seconds = catalog.clip_seconds(spec, ctx.scene.end - ctx.scene.start)
-        res = higgsfield.generate(ctx.video_model, catalog.video_body(spec, higgsfield.upload(image), prompt, seconds, ctx.aspect))
+        res = higgsfield.generate(ctx.video_model, catalog.video_body(spec, higgsfield.upload(image), video_prompt(ctx), seconds, ctx.aspect))
         higgsfield.download(res["video"]["url"], out)
 
 
-_REF_NOTE = ("the REFERENCE SHOT. Copy ONLY its composition, camera angle and distance, pose and gesture, background layout, "
-             "lighting direction and color grade. Do NOT copy the person in it: not the face, hairstyle, clothing, accessories or any logos.")
-_CAST_NOTE = "the PERSON to show. Use exactly this person's face, hairstyle, skin tone and outfit."
+# ── 참고 이미지 역할 ─────────────────────────────────────────────
+_STYLE_NOTE = ("a STYLE SAMPLE from another video. Borrow ONLY its art style / medium, rendering, texture, color palette, "
+               "lighting mood and image quality. Do NOT reproduce anything in it: not its people, faces, hairstyles, clothing, "
+               "background, room, props, layout or composition. Create a completely new scene.")
+_ANCHOR_NOTE = ("the KEY FRAME of this same ad (scene 1). Keep exactly its art style, rendering, color palette, lighting mood "
+                "and world, and the same character identity (face, hair, outfit) if a person appears. Create a NEW shot as "
+                "described — new camera angle and action — not a copy of this frame.")
+_CAST_NOTE = "the CHARACTER of this ad. Keep exactly this character's face, hairstyle, skin tone and outfit."
 _HAND_NOTE = "our product held in a real adult hand. It shows the product's TRUE SIZE relative to a hand: keep exactly this scale."
-_PACK_NOTE = "our product packaging. Reproduce its shape, colors and label design exactly."
+_PACK_NOTE = "our product packaging. Keep its shape, colors and label design recognizable, rendered in this image's art style."
 _OTHER_NOTE = "another photo of our product, for its look and material."
 
 INTEGRATION = (
-    "The product must look physically photographed in this scene, not composited or pasted on: same light direction, "
-    "color temperature and exposure as the scene, matching soft shadows and contact shadows, realistic packaging material "
-    "(matte or foil sheen, slight creases), fingers naturally wrapping and overlapping its edges, the same perspective, "
-    "depth of field, sharpness and image grain as the rest of the photo."
+    "The product must look like it naturally belongs in this image, not composited or pasted on: rendered in the same art style, "
+    "same light direction, color temperature and exposure as the scene, matching soft shadows and contact shadows, realistic "
+    "packaging material, fingers naturally wrapping and overlapping its edges, the same perspective, depth of field and grain."
 )
-STYLE = ("Photorealistic smartphone UGC photo with natural skin texture. No added text, captions, subtitles, watermarks "
-         "or brand logos other than our product's own label.")
+NO_TEXT = "No added text, captions, subtitles, watermarks or brand logos other than our product's own label."
+DEFAULT_STYLE = "Photorealistic smartphone UGC photo with natural skin texture."
 
 
 def _pick_refs(ctx: SceneContext, limit: int) -> list[tuple[Path, str]]:
-    """참고 이미지와 역할 설명. 우선순위: 레퍼런스 장면 → 새 인물 → 손에 든 크기 비교 1장 → 패키지 → 나머지.
+    """참고 이미지와 역할 설명.
 
+    - 기준 장면(첫 장면): 레퍼런스 영상의 그림체 견본(구도·인물은 쓰지 않음) + 제품 사진
+    - 나머지 장면: 기준 장면(그림체·세계관·인물) + (기준 장면에 인물이 없을 때) 인물 기준 이미지 + 제품 사진
     참고 이미지가 너무 많으면 생성 자체가 실패하므로 모델 한도(최대 catalog.REF_IMAGE_LIMIT=5장)를 넘기지 않는다.
     """
     hand = [p for p, r in ctx.products if r == "in_hand"]
     pack = [p for p, r in ctx.products if r == "packaging"]
     other = [p for p, r in ctx.products if r not in ("in_hand", "packaging")]
     refs: list[tuple[Path, str]] = []
-    if ctx.ref_frame:
-        refs.append((ctx.ref_frame, _REF_NOTE))
-    if ctx.has_person and ctx.cast_image and ctx.cast_image.exists():
-        refs.append((ctx.cast_image, _CAST_NOTE))
+    if ctx.anchor_image and ctx.anchor_image.exists():
+        refs.append((ctx.anchor_image, _ANCHOR_NOTE))
+        if ctx.has_person and ctx.cast_image and ctx.cast_image.exists() and not ctx.cast_is_anchor:
+            refs.append((ctx.cast_image, _CAST_NOTE))
+    else:
+        refs += [(p, _STYLE_NOTE) for p in ctx.style_frames[:1]]
     refs += [(p, _HAND_NOTE) for p in hand[:1]] + [(p, _PACK_NOTE) for p in pack] + [(p, _OTHER_NOTE) for p in other] + [(p, _HAND_NOTE) for p in hand[1:]]
     return refs[:limit]
 
 
 def scene_prompt(ctx: SceneContext, notes: list[str]) -> str:
-    """장면 브리프 + 참고 이미지별 역할 + 크기·합성·화질 지시."""
-    parts = [ctx.prompt]
+    """그림체 → 세계관 → 장면 브리프 → 참고 이미지별 역할 → 크기·합성 지시."""
+    parts = [f"Art style: {ctx.style_guide or DEFAULT_STYLE}"]
+    if ctx.world:
+        parts.append(f"Setting of this ad: {ctx.world}")
+    parts.append(ctx.prompt)
     if notes:
         parts.append("Reference images: " + " ".join(f"Image {i} is {n}" for i, n in enumerate(notes, 1)))
     if ctx.products:
         parts.append(" ".join(x for x in (ctx.product_scale, "If the product appears, it must keep this real-world size relative to hands and body." if ctx.product_scale else "", INTEGRATION) if x))
-    parts.append(STYLE)
+    parts.append(NO_TEXT)
     return "\n\n".join(parts)
 
 
-def portrait_prompt(character: str) -> str:
-    return (f"Waist-up portrait photo of this person looking at the camera: {character} "
-            "Plain softly lit indoor background, natural daylight, neutral expression. " + STYLE)
+def video_prompt(ctx: SceneContext) -> str:
+    move = ctx.video_prompt or f"Camera: {ctx.motion or 'slow push-in'}. Subtle natural movement."
+    return f"{move} Keep the art style, the character and the product exactly consistent with the image. No text."
+
+
+def portrait_prompt(character: str, style_guide: str = "") -> str:
+    return (f"Art style: {style_guide or DEFAULT_STYLE}\n\nWaist-up character portrait looking at the camera: {character} "
+            f"Simple softly lit background, neutral expression. {NO_TEXT}")
 
 
 def _crop_to_aspect(src: Path, aspect: str, out: Path) -> None:

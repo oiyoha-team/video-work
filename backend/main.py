@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 import config
 import export
 import gates
+import timings
 import workflow
 from llm import claude_client
 from llm.claude_client import ClaudeError, ClaudeNotConfigured
@@ -45,6 +46,8 @@ async def lifespan(_app: FastAPI):
         }
         if changed:
             store.update_project(p.id, **changed)
+        visual_pipeline.clear_busy(p.id)
+        sound_pipeline.clear_busy(p.id)
     visual_catalog.start_scheduler()  # 힉스필드 모델 목록 12시간마다 갱신
     yield
 
@@ -492,7 +495,12 @@ def get_production(pid: str):
     data = store.get_production(pid).model_dump()
     data["visual"]["image_model"] = visual_pipeline.image_model(pid)
     data["visual"]["video_model"] = visual_pipeline.video_model(pid)
-    return {**data, "status": workflow.production_status(pid)}
+    data["visual"]["anchor_scene"] = visual_pipeline.anchor_id(pid) if store.get_script(pid) else ""
+    # 장면 하나가 보통 걸리는 시간 (초) — 화면에서 '보통 30초~2분' 같은 안내에 쓴다
+    typical = {"image": timings.typical("image", data["visual"]["image_model"]),
+               "video": timings.typical("video", data["visual"]["video_model"]),
+               "line": timings.typical("line"), "revise": timings.typical("revise")}
+    return {**data, "status": workflow.production_status(pid), "typical": typical}
 
 
 @app.get("/api/projects/{pid}/production/estimate")
@@ -630,18 +638,55 @@ def preview_tts(pid: str, body: TTSSettingsBody):
 
 class SceneIdsBody(BaseModel):
     scene_ids: list[str] | None = None
+    instruction: str = ""  # 수정 지시 (선택). 고른 장면 모두에 반영
 
 
 @app.post("/api/projects/{pid}/visual/images")
 def generate_images(pid: str, body: SceneIdsBody | None = None):
-    workflow.start_images(pid, body.scene_ids if body else None)
+    body = body or SceneIdsBody()
+    workflow.start_images(pid, body.scene_ids, body.instruction)
     return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/visual/videos")
 def generate_videos(pid: str, body: SceneIdsBody | None = None):
-    workflow.start_videos(pid, body.scene_ids if body else None)
+    body = body or SceneIdsBody()
+    workflow.start_videos(pid, body.scene_ids, body.instruction)
     return {"ok": True}
+
+
+class ChooseBody(BaseModel):
+    keep: str  # new | prev
+
+
+@app.post("/api/projects/{pid}/visual/scenes/{scene_id}/choose")
+def choose_version(pid: str, scene_id: str, body: ChooseBody):
+    """다시 만든 장면에서 이전 결과와 새 결과 중 하나를 고른다."""
+    asset = store.get_production(pid).visual.scenes.get(scene_id)
+    if asset and asset.busy:
+        raise HTTPException(409, "이 장면을 만드는 중입니다. 끝난 뒤 고르세요.")
+    visual_pipeline.choose_version(pid, scene_id, body.keep)
+    return get_production(pid)
+
+
+class ResetBody(BaseModel):
+    what: str = "all"  # visual | sound | all
+
+
+@app.post("/api/projects/{pid}/production/reset")
+def reset_production(pid: str, body: ResetBody):
+    """5단계 초기화 (만든 이미지·영상·음성을 지움, 고른 모델·목소리는 유지)."""
+    return workflow.reset_production(pid, body.what)
+
+
+class ResetProjectBody(BaseModel):
+    keep_product: bool = True
+
+
+@app.post("/api/projects/{pid}/reset")
+def reset_project(pid: str, body: ResetProjectBody):
+    """프로젝트 전체 초기화: 이름만 남기고 1단계부터 다시."""
+    return workflow.reset_project(pid, body.keep_product)
 
 
 @app.post("/api/projects/{pid}/visual/approve")
@@ -654,12 +699,8 @@ def approve_images(pid: str):
 @app.post("/api/projects/{pid}/visual/cast")
 def regenerate_cast(pid: str):
     """새 인물 기준 이미지를 다시 만든다 (같은 인물 설정으로 얼굴만 새로). 이후 장면 이미지를 다시 만들어야 반영된다."""
-    if store.get_project(pid).visual_job.status == "running":
-        raise HTTPException(409, "비주얼 작업이 진행 중입니다.")
-    if not store.get_production(pid).visual.character:
-        raise ValueError("아직 인물 설정이 없습니다. 이미지를 먼저 생성하세요.")
-    visual_pipeline.make_cast(pid)
-    return get_production(pid)
+    workflow.start_cast(pid)
+    return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/visual/scenes/{scene_id}/{what}")

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, dataUrl } from "../api";
-import { ErrorBox } from "../components/common";
+import { AutoTextarea, ErrorBox, ErrorText, ProgressLine, fmtDur, useNow } from "../components/common";
 import { fmtTime, roleLabel } from "../labels";
-import type { Estimate, JobState, Production, Project, Script, Status, TTSSettings, TypecastVoice, VisualModels } from "../types";
+import type { Estimate, JobState, Production, Project, Script, Status, TTSSettings, TypecastVoice, VisualAsset, VisualModels } from "../types";
 
 interface Props {
   project: Project;
@@ -14,27 +14,24 @@ interface Props {
 const ASPECT_CSS: Record<string, string> = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1", "4:5": "4 / 5" };
 const AGE_LABEL: Record<string, string> = { child: "어린이", teenager: "10대", young_adult: "청년", middle_age: "중년", elder: "노년" };
 const usd = (n: number) => `$${n.toFixed(2)}`;
+const range = ([lo, hi]: [number, number]) => `보통 ${fmtDur(lo)} ~ ${fmtDur(hi)}`;
 
 function TrackProgress({ job }: { job: JobState }) {
-  if (job.status === "running") {
+  if (job.status === "running") return <ProgressLine job={job} />;
+  if (job.status === "error")
     return (
-      <div className="track-progress">
-        <div className="progress">
-          <div className="progress-bar" style={{ width: `${Math.round(job.progress * 100)}%` }} />
-        </div>
-        <span className="muted small">{job.message}</span>
+      <div className="alert error small">
+        <ErrorText message={job.message} />
       </div>
     );
-  }
-  if (job.status === "error") return <div className="alert error small">{job.message}</div>;
-  if (job.status === "done" && job.message) return <span className="muted small">{job.message}</span>;
+  if (job.status === "done" && job.message) return <span className="muted small">✓ {job.message}</span>;
   return null;
 }
 
 // ── 전체화면 보기 ─────────────────────────────────────────────
 
 interface ViewItem {
-  sceneId: string;
+  key: string;
   label: string;
   kind: "image" | "video";
   src: string;
@@ -98,7 +95,7 @@ function Lightbox({ items, index, onIndex, onClose }: {
   );
 }
 
-// ── TTS 설정 (목소리·배속·감정) ─────────────────────────────────────────────
+// ── TTS 설정 (목소리·배속) ─────────────────────────────────────────────
 
 type TTSForm = TTSSettings & { voice_id: string };
 
@@ -183,7 +180,13 @@ function TTSPanel({ form, setForm, voices, disabled, onPreview, previewing }: {
         <b>{form.tempo.toFixed(2)}x</b>
       </label>
       <button className="btn small" disabled={disabled || previewing} onClick={onPreview}>
-        {previewing ? "만드는 중…" : "🔊 이 목소리·배속으로 첫 문장 미리 듣기"}
+        {previewing ? (
+          <>
+            <span className="spinner tiny" /> 만드는 중… (보통 2~8초)
+          </>
+        ) : (
+          "🔊 이 목소리·배속으로 첫 문장 미리 듣기"
+        )}
       </button>
     </div>
   );
@@ -234,7 +237,75 @@ function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRef
   );
 }
 
+// ── 수정 지시 입력 ─────────────────────────────────────────────
+
+const IMAGE_HINT = "예: 제품을 두 손으로 들고 카메라 쪽으로 내밀기 / 배경을 밝은 욕실로 / 표정을 더 놀란 얼굴로";
+const VIDEO_HINT = "예: 카메라가 천천히 제품 쪽으로 다가가기 / 인물이 웃으며 고개 끄덕이기 / 움직임을 더 작게";
+
+function RegenForm({ kind, count, eta, cost, onSubmit, onCancel, disabled, note }: {
+  kind: "image" | "video";
+  count: number;
+  eta: string;
+  cost: string;
+  onSubmit: (instruction: string) => void;
+  onCancel: () => void;
+  disabled: boolean;
+  note?: string;
+}) {
+  const [text, setText] = useState("");
+  const what = kind === "image" ? "이미지" : "영상";
+  return (
+    <div className="regen-form" onClick={(e) => e.stopPropagation()}>
+      <b className="small">
+        {count > 1 ? `선택한 ${count}개 장면 ` : ""}
+        {what} 다시 만들기
+      </b>
+      <AutoTextarea
+        value={text}
+        onChange={setText}
+        minRows={2}
+        placeholder={`수정 지시 (선택) — 비워 두면 같은 설계로 다시 만듭니다.\n${kind === "image" ? IMAGE_HINT : VIDEO_HINT}`}
+      />
+      {note && <span className="small warn-text">{note}</span>}
+      <span className="muted small">
+        {eta}
+        {cost && ` · 예상 비용 ${cost}`} · 만든 뒤 이전 결과와 비교해 고를 수 있습니다
+      </span>
+      <div className="row wrap">
+        <button className="btn small primary" disabled={disabled} onClick={() => onSubmit(text.trim())}>
+          {text.trim() ? "지시대로 다시 만들기" : "그대로 다시 만들기"}
+        </button>
+        <button className="btn small ghost" onClick={onCancel}>
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 장면을 만드는 중일 때 미디어 칸 위에 표시 */
+function BusyOverlay({ asset, kind, typical, now }: { asset?: VisualAsset; kind: "image" | "video"; typical: [number, number]; now: number }) {
+  if (!asset?.busy) return null;
+  if (asset.busy === "queued")
+    return (
+      <div className="busy-overlay queued">
+        <span className="small">순서 대기 중</span>
+      </div>
+    );
+  if (asset.busy !== kind) return null;
+  return (
+    <div className="busy-overlay">
+      <span className="spinner" />
+      <b className="small">{kind === "image" ? "이미지" : "영상"} 만드는 중</b>
+      <span className="small">{fmtDur(now - asset.busy_since)} 경과</span>
+      <span className="tiny-text">{range(typical)}</span>
+    </div>
+  );
+}
+
 // ── 5단계 ─────────────────────────────────────────────
+
+type Editing = { kind: "image" | "video"; sceneId: string } | null;
 
 export default function Step5Production({ project, status, onRefresh, onNext }: Props) {
   const [script, setScript] = useState<Script | null>(null);
@@ -243,16 +314,20 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   const [error, setError] = useState("");
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [view, setView] = useState<number | null>(null);
+  const [view, setView] = useState<{ items: ViewItem[]; index: number } | null>(null);
   const [voices, setVoices] = useState<TypecastVoice[]>([]);
   const [models, setModels] = useState<VisualModels | null>(null);
   const [form, setForm] = useState<TTSForm | null>(null);
+  const [editing, setEditing] = useState<Editing>(null);
+  const [selInstruction, setSelInstruction] = useState("");
   const player = useRef<HTMLAudioElement | null>(null);
   const vJob = project.visual_job;
   const sJob = project.sound_job;
   const vRunning = vJob.status === "running";
   const sRunning = sJob.status === "running";
   const typecast = status?.sound_engine_id === "typecast";
+  const anyBusy = !!prod && (Object.values(prod.visual.scenes).some((a) => a.busy) || Object.values(prod.sound.scenes).some((a) => a.busy));
+  const now = useNow(anyBusy || vRunning || sRunning);
 
   useEffect(() => {
     api.getScript(project.id).then(setScript);
@@ -283,17 +358,16 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   }, [prod, form]);
 
   const scenes = useMemo(() => script?.scenes ?? [], [script]);
-  const viewItems: ViewItem[] = useMemo(() => {
+  const allItems: ViewItem[] = useMemo(() => {
     if (!prod) return [];
     const out: ViewItem[] = [];
     if (prod.visual.cast_image)
-      out.push({ sceneId: "cast", kind: "image", label: "새 인물", src: `${dataUrl(project.id, prod.visual.cast_image)}?v=${prod.visual.cast_v}` });
+      out.push({ key: "cast:image", kind: "image", label: "인물 기준", src: `${dataUrl(project.id, prod.visual.cast_image)}?v=${prod.visual.cast_v}` });
     scenes.forEach((s, i) => {
       const va = prod.visual.scenes[s.id];
       const no = `#${String(i + 1).padStart(2, "0")}`;
-      if (va?.image)
-        out.push({ sceneId: s.id, kind: "image", label: `${no} 이미지`, src: `${dataUrl(project.id, va.image)}?v=${va.v}` });
-      if (va?.video) out.push({ sceneId: s.id, kind: "video", label: `${no} 영상 클립`, src: `${dataUrl(project.id, va.video)}?v=${va.v}` });
+      if (va?.image) out.push({ key: `${s.id}:image`, kind: "image", label: `${no} 이미지`, src: `${dataUrl(project.id, va.image)}?v=${va.v}` });
+      if (va?.video) out.push({ key: `${s.id}:video`, kind: "video", label: `${no} 영상 클립`, src: `${dataUrl(project.id, va.video)}?v=${va.v}` });
     });
     return out;
   }, [prod, scenes, project.id]);
@@ -312,10 +386,12 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
       setBusy("");
     }
   };
-  const startJob = (fn: () => Promise<unknown>) =>
-    run("요청 중", async () => {
+  /** 백그라운드 작업 시작 → 바로 상태를 다시 읽어 진행 표시가 뜨게 한다 */
+  const startJob = (label: string, fn: () => Promise<unknown>) =>
+    run(label, async () => {
       await fn();
       await onRefresh();
+      setProd(await api.getProduction(project.id));
     });
 
   const settingsDirty =
@@ -331,39 +407,56 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
     !billable || confirm(`${what}\n예상 비용: 약 ${usd(amount)} (힉스필드 견적 기준, 실패한 생성은 청구되지 않음)\n\n진행할까요?`);
   const imageCost = (ids: string[]) => ids.length * (estimate?.image_usd_each ?? 0);
   const videoCost = (ids: string[]) => ids.reduce((sum, id) => sum + (estimate?.scene_video_usd[id] ?? 0), 0);
+  const parallelEta = (kind: "image" | "video", n: number, revise: boolean) => {
+    const [lo, hi] = prod.typical[kind];
+    const rounds = Math.ceil(n / 3);
+    const [rlo, rhi] = revise ? prod.typical.revise : [0, 0];
+    return `예상 소요 ${fmtDur(lo * rounds + rlo)} ~ ${fmtDur(hi * rounds + rhi)}`;
+  };
 
   const vs = prod.visual.scenes;
   const ss = prod.sound.scenes;
   const st = prod.status;
+  const anchor = prod.visual.anchor_scene;
   const ratio = ASPECT_CSS[script.meta.aspect_ratio] ?? "9 / 16";
   const url = (rel: string, v: number) => `${dataUrl(project.id, rel)}?v=${v}`;
   const toAnimate = scenes.filter((s) => vs[s.id]?.image && !vs[s.id]?.video).map((s) => s.id);
   const sel = scenes.map((s) => s.id).filter((id) => selected.has(id));
   const lock = !!busy;
-  const openView = (sceneId: string, kind: "image" | "video") => setView(viewItems.findIndex((x) => x.sceneId === sceneId && x.kind === kind));
+  const openItem = (key: string) => {
+    const i = allItems.findIndex((x) => x.key === key);
+    if (i >= 0) setView({ items: allItems, index: i });
+  };
+  const sceneNo = (id: string) => `#${String(scenes.findIndex((s) => s.id === id) + 1).padStart(2, "0")}`;
 
-  const makeImages = (ids?: string[]) => {
+  const makeImages = (ids: string[] | undefined, instruction = "") => {
     const target = ids ?? scenes.map((s) => s.id);
     const what = ids
-      ? `장면 ${target.length}개의 이미지를 다시 만듭니다 (그 장면의 영상은 지워지고, 전체 승인 때 다시 영상화됩니다).`
-      : `장면 ${target.length}개의 이미지를 만듭니다.`;
-    if (confirmCost(what, imageCost(target))) startJob(() => api.generateImages(project.id, ids));
+      ? `장면 ${target.length}개의 이미지를 다시 만듭니다${instruction ? ` (수정 지시: ${instruction})` : ""}.\n그 장면의 영상은 새 이미지를 승인한 뒤 다시 만들어집니다.`
+      : `장면 ${target.length}개의 이미지를 새로 만듭니다.\n레퍼런스의 그림체·후킹·구성을 빌려 첫 장면(기준)을 만들고, 나머지 장면은 그 기준을 따릅니다.`;
+    if (!confirmCost(what, imageCost(target))) return false;
+    setEditing(null);
+    startJob("images", () => api.generateImages(project.id, ids, instruction));
+    return true;
   };
   /** [이미지 전체 승인 → 영상화]: 영상이 없는 장면(처음엔 전체, 이후엔 이미지를 다시 만든 장면)을 영상화한다 */
   const approveAll = () => {
-    if (confirmCost(`이미지를 전체 승인하고 장면 ${toAnimate.length}개를 영상화합니다 (${estimate?.video_model}).`, videoCost(toAnimate)))
-      startJob(() => api.approveAllImages(project.id));
+    const pending = st.comparing ? `\n이전/새 결과를 고르지 않은 장면 ${st.comparing}개는 새 결과로 확정됩니다.` : "";
+    if (confirmCost(`이미지를 전체 승인하고 장면 ${toAnimate.length}개를 영상화합니다 (${estimate?.video_model}).${pending}`, videoCost(toAnimate)))
+      startJob("approve", () => api.approveAllImages(project.id));
   };
-  const remakeVideos = (ids: string[]) => {
+  const remakeVideos = (ids: string[], instruction = "") => {
     if (ids.some((id) => !vs[id]?.image_approved)) {
       setError("이미지를 다시 만든 장면이 있습니다. [이미지 전체 승인 → 영상화]를 먼저 눌러 주세요.");
       return;
     }
-    if (confirmCost(`장면 ${ids.length}개의 영상을 다시 만듭니다 (${estimate?.video_model}).`, videoCost(ids)))
-      startJob(() => api.generateVideos(project.id, ids));
+    if (!confirmCost(`장면 ${ids.length}개의 영상을 다시 만듭니다 (${estimate?.video_model})${instruction ? `\n수정 지시: ${instruction}` : ""}.`, videoCost(ids)))
+      return;
+    setEditing(null);
+    startJob("videos", () => api.generateVideos(project.id, ids, instruction));
   };
   const makeSound = (ids?: string[]) =>
-    startJob(async () => {
+    startJob("sound", async () => {
       await saveSettings();
       await api.generateSound(project.id, ids);
     });
@@ -379,6 +472,18 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
       player.current = new Audio(`${res.url}?t=${Date.now()}`);
       await player.current.play().catch(() => {});
     });
+  const choose = (sceneId: string, keep: "new" | "prev") => run(`choose-${sceneId}`, async () => setProd(await api.chooseVersion(project.id, sceneId, keep)));
+  const reset = (what: "visual" | "sound" | "all") => {
+    const label = { visual: "만든 이미지·영상·인물 기준 이미지", sound: "만든 음성", all: "만든 이미지·영상·음성 전부" }[what];
+    if (!confirm(`${label}를 모두 지우고 처음부터 다시 시작합니다.\n고른 모델·목소리·배속은 그대로 남습니다.\n\n되돌릴 수 없습니다. 초기화할까요?`)) return;
+    run("reset", async () => {
+      await api.resetProduction(project.id, what);
+      setSelected(new Set());
+      setEditing(null);
+      await onRefresh();
+      setProd(await api.getProduction(project.id));
+    });
+  };
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -388,6 +493,10 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
       return next;
     });
   const allSelected = sel.length === scenes.length && scenes.length > 0;
+  const anchorNote = (ids: string[]) =>
+    anchor && ids.includes(anchor) && ids.length < scenes.length
+      ? "기준 장면(첫 장면)을 바꾸면, 나머지 장면은 다시 만들 때부터 새 기준의 그림체·인물을 따릅니다."
+      : undefined;
 
   return (
     <div className="stack">
@@ -445,40 +554,65 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               )}
             </div>
           )}
+          {prod.visual.concept_note && (
+            <details className="concept-box" open={!st.videos}>
+              <summary>
+                <b className="small">레퍼런스에서 빌려 온 것 · 새로 만든 것</b>
+              </summary>
+              <div className="pre small">{prod.visual.concept_note}</div>
+              <details className="detail-toggle">
+                <summary>이미지 AI에 넘기는 설정 (영어)</summary>
+                <div className="small muted brief">
+                  <b>그림체</b> {prod.visual.style_guide || "-"}
+                  <br />
+                  <b>배경·공간</b> {prod.visual.world || "-"}
+                  <br />
+                  <b>인물</b> {prod.visual.character || "(인물 없음)"}
+                  {prod.visual.product_scale && (
+                    <>
+                      <br />
+                      <b>제품 크기</b> {prod.visual.product_scale}
+                    </>
+                  )}
+                </div>
+              </details>
+            </details>
+          )}
           {prod.visual.cast_image && (
             <div className="cast-box">
-              <img
-                src={url(prod.visual.cast_image, prod.visual.cast_v)}
-                alt="새 인물"
-                onClick={() => setView(viewItems.findIndex((x) => x.sceneId === "cast"))}
-                title="크게 보기"
-              />
+              <img src={url(prod.visual.cast_image, prod.visual.cast_v)} alt="인물 기준" onClick={() => openItem("cast:image")} title="크게 보기" />
               <div className="stack-tight">
-                <b className="small">새 인물</b>
-                <span className="muted small">레퍼런스 인물과 얼굴·헤어·의상을 바꾼 인물입니다. 모든 장면에 이 인물이 나옵니다.</span>
-                {prod.visual.product_scale && <span className="muted small">제품 크기 기준: {prod.visual.product_scale}</span>}
-                <button
-                  className="btn small"
-                  disabled={vRunning || lock}
-                  onClick={() => {
-                    if (confirmCost("새 인물을 다시 만듭니다. 장면에 반영하려면 이후 이미지를 다시 만들어야 합니다.", estimate?.image_usd_each ?? 0))
-                      run("cast", async () => setProd(await api.regenerateCast(project.id)));
-                  }}
-                >
-                  {busy === "cast" ? "만드는 중…" : "↻ 인물 다시 만들기"}
-                </button>
+                <b className="small">인물 기준</b>
+                {anchor && vs[anchor]?.has_person ? (
+                  <span className="muted small">첫 장면(기준 장면)의 인물입니다. 모든 장면에 이 인물이 나옵니다. 인물을 바꾸려면 첫 장면 이미지를 다시 만드세요.</span>
+                ) : (
+                  <>
+                    <span className="muted small">첫 장면의 그림체로 만든 새 인물입니다. 인물이 나오는 장면에 이 인물이 나옵니다.</span>
+                    <button
+                      className="btn small"
+                      disabled={vRunning || lock}
+                      onClick={() => {
+                        if (confirmCost("인물 기준 이미지를 다시 만듭니다. 장면에 반영하려면 이후 그 장면 이미지를 다시 만들어야 합니다.", estimate?.image_usd_each ?? 0))
+                          startJob("cast", () => api.regenerateCast(project.id));
+                      }}
+                    >
+                      ↻ 인물 다시 만들기
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
           <TrackProgress job={vJob} />
           <ol className="flow-steps small">
-            <li className={st.images ? "done" : ""}>이미지 생성</li>
-            <li className={st.images_approved ? "done" : ""}>확인 (누르면 크게 보기) · 마음에 안 드는 장면만 ↻ → 전체 승인</li>
-            <li className={st.videos ? "done" : ""}>영상화 · 마음에 안 드는 장면만 ↻</li>
+            <li className={st.images ? "done" : ""}>장면 설계 → 첫 장면(기준) → 나머지 장면 이미지</li>
+            <li className={st.images_approved ? "done" : ""}>확인 · 마음에 안 드는 장면만 지시를 넣어 다시 만들기 → 전체 승인</li>
+            <li className={st.videos ? "done" : ""}>영상화 · 마음에 안 드는 장면만 다시 만들기</li>
           </ol>
           <div className="row wrap">
-            <button className={`btn small ${st.images ? "" : "primary"}`} disabled={vRunning || lock} onClick={() => makeImages()}>
-              {st.images ? "이미지 전체 재생성" : "이미지 생성 시작"}
+            <button className={`btn small ${st.images ? "" : "primary"}`} disabled={vRunning || lock} onClick={() => makeImages(undefined)}>
+              {busy === "images" ? <span className="spinner tiny" /> : null}
+              {st.images ? "이미지 전체 새로 만들기" : "이미지 생성 시작"}
             </button>
             <button
               className="btn small primary"
@@ -486,9 +620,15 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               title={st.images < st.total ? "모든 장면의 이미지가 있어야 합니다" : ""}
               onClick={approveAll}
             >
+              {busy === "approve" ? <span className="spinner tiny" /> : null}
               이미지 전체 승인 → 영상화{st.videos && toAnimate.length ? ` (${toAnimate.length}개)` : ""}
             </button>
           </div>
+          {!st.images && !vRunning && (
+            <span className="muted small">
+              예상 소요: 장면 설계 약 1~2분 + 이미지 {parallelEta("image", Math.max(st.total, 1), false).replace("예상 소요 ", "")}
+            </span>
+          )}
         </div>
 
         <div className="track-parallel" aria-hidden>
@@ -522,6 +662,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
           {settingsDirty && st.audios > 0 && <span className="small warn-text">설정을 바꿨습니다. 다시 만드는 문장부터 새 설정이 적용됩니다.</span>}
           <div className="row wrap">
             <button className="btn small primary" disabled={sRunning || lock} onClick={() => makeSound()}>
+              {busy === "sound" ? <span className="spinner tiny" /> : null}
               {st.audios ? "이 설정으로 음성 전체 재생성" : "▶ 음성 생성 시작"}
             </button>
           </div>
@@ -531,22 +672,39 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
       <div className={`selection-bar ${sel.length ? "active" : ""}`}>
         <label className="row">
           <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(scenes.map((s) => s.id)))} />
-          <span className="small">{sel.length ? `${sel.length}개 장면 선택됨` : "장면을 체크하면 그 구간만 다시 만들 수 있습니다"}</span>
+          <span className="small">
+            {sel.length ? (
+              <>
+                <b>{sel.length}개 장면 선택됨</b> ({sel.map(sceneNo).join(", ")})
+              </>
+            ) : (
+              "☑ 장면 왼쪽 체크박스로 여러 장면을 골라 한 번에 다시 만들 수 있습니다 (맨 앞 체크박스 = 전체 선택)"
+            )}
+          </span>
         </label>
         {sel.length > 0 && (
-          <div className="row wrap">
-            <button className="btn small" disabled={vRunning || lock} onClick={() => makeImages(sel)}>
-              이미지 다시 만들기
-            </button>
-            <button className="btn small" disabled={vRunning || lock} onClick={() => remakeVideos(sel)}>
-              영상 다시 만들기
-            </button>
-            <button className="btn small" disabled={sRunning || lock} onClick={() => makeSound(sel)}>
-              음성 다시 만들기
-            </button>
-            <button className="btn small ghost" onClick={() => setSelected(new Set())}>
-              선택 해제
-            </button>
+          <div className="stack-tight grow">
+            <AutoTextarea
+              value={selInstruction}
+              onChange={setSelInstruction}
+              placeholder={`선택한 장면 모두에 줄 수정 지시 (선택) — ${IMAGE_HINT}`}
+            />
+            {anchorNote(sel) && <span className="small warn-text">{anchorNote(sel)}</span>}
+            <div className="row wrap">
+              <button className="btn small" disabled={vRunning || lock} onClick={() => makeImages(sel, selInstruction.trim()) && setSelInstruction("")}>
+                이미지 다시 만들기
+              </button>
+              <button className="btn small" disabled={vRunning || lock} onClick={() => remakeVideos(sel, selInstruction.trim())}>
+                영상 다시 만들기
+              </button>
+              <button className="btn small" disabled={sRunning || lock} onClick={() => makeSound(sel)}>
+                음성 다시 만들기
+              </button>
+              <button className="btn small ghost" onClick={() => setSelected(new Set())}>
+                선택 해제
+              </button>
+              <span className="muted small">{parallelEta("image", sel.length, !!selInstruction.trim())} (이미지 기준)</span>
+            </div>
           </div>
         )}
       </div>
@@ -554,7 +712,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
       <section className="prod-table">
         <div className="prod-row prod-head">
           <div>장면</div>
-          <div>대사 · 장면 브리프</div>
+          <div>대사 · 장면 설계</div>
           <div>이미지</div>
           <div>영상 클립</div>
           <div>음성 (문장별 다시 만들기)</div>
@@ -563,7 +721,14 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
           const va = vs[s.id];
           const sa = ss[s.id];
           const dur = s.end - s.start;
-          const over = sa && sa.duration > dur + 0.05;
+          const over = sa && sa.lines.length > 0 && sa.duration > dur + 0.05;
+          const prev = va?.prev;
+          // 다시 만드는 중에는 비교 대신 진행 표시를 보여 준다
+          const comparingImage = !!prev && !va?.busy && prev.image !== va?.image;
+          const comparingVideo = !!prev && !va?.busy && !comparingImage && !!prev.video && prev.video !== va?.video;
+          const isAnchor = s.id === anchor;
+          const editImage = editing?.sceneId === s.id && editing.kind === "image";
+          const editVideo = editing?.sceneId === s.id && editing.kind === "video";
           return (
             <div key={s.id} className={`prod-row ${selected.has(s.id) ? "selected" : ""}`}>
               <div className="seg-time">
@@ -575,61 +740,193 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                   {fmtTime(s.start)}–{fmtTime(s.end)}
                 </span>
                 {s.role && <span className="chip">{roleLabel(s.role)}</span>}
+                {isAnchor && (
+                  <span className="chip anchor-chip" title="나머지 장면이 이 장면의 그림체·인물·분위기를 따릅니다">
+                    기준 장면
+                  </span>
+                )}
               </div>
               <div className="prod-text">
                 <div className="pre">{s.dialogue || <span className="muted">(대사 없음)</span>}</div>
+                {va?.instruction && <div className="small instruction-note">✎ 반영한 수정 지시: {va.instruction}</div>}
                 {va?.prompt && (
                   <details className="detail-toggle">
-                    <summary>장면 브리프{va.motion ? ` · ${va.motion}` : ""}</summary>
+                    <summary>장면 설계 (이미지 AI 프롬프트){va.motion ? ` · ${va.motion}` : ""}</summary>
                     <div className="small muted brief">{va.prompt}</div>
+                    {va.video_prompt && <div className="small muted brief">영상: {va.video_prompt}</div>}
                   </details>
                 )}
               </div>
+
               <div className="media-cell">
-                <div
-                  className={`media-box ${va?.image ? "zoomable" : ""}`}
-                  style={{ aspectRatio: ratio }}
-                  onClick={() => va?.image && openView(s.id, "image")}
-                  title={va?.image ? "크게 보기" : ""}
-                >
-                  {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">대기</span>}
-                </div>
-                <button className="icon-btn small-btn" disabled={vRunning || lock} title="이 장면 이미지 다시 만들기" onClick={() => makeImages([s.id])}>
-                  ↻
-                </button>
-              </div>
-              <div className="media-cell">
-                <div
-                  className={`media-box ${va?.video ? "zoomable" : ""}`}
-                  style={{ aspectRatio: ratio }}
-                  onClick={() => va?.video && openView(s.id, "video")}
-                  title={va?.video ? "크게 보기" : ""}
-                >
-                  {va?.video ? (
-                    <video
-                      src={url(va.video, va.v)}
-                      preload="metadata"
-                      muted
-                      loop
-                      playsInline
-                      onMouseEnter={(e) => e.currentTarget.play()}
-                      onMouseLeave={(e) => e.currentTarget.pause()}
-                    />
-                  ) : (
-                    <span className="muted small">{va?.image ? "전체 승인 후 영상화" : "대기"}</span>
-                  )}
-                </div>
+                {comparingImage && prev ? (
+                  <div className="compare">
+                    <span className="small">
+                      <b>이전 / 새 이미지 비교</b> — 쓸 것을 고르세요
+                    </span>
+                    <div className="compare-pair">
+                      {[
+                        { tag: "이전", src: prev.image ? url(prev.image, prev.v) : "", keep: "prev" as const, note: prev.instruction },
+                        { tag: "새", src: va?.image ? url(va.image, va.v) : "", keep: "new" as const, note: va?.instruction ?? "" },
+                      ].map((c) => (
+                        <div key={c.tag} className="compare-item">
+                          <div
+                            className="media-box zoomable"
+                            style={{ aspectRatio: ratio }}
+                            onClick={() =>
+                              setView({
+                                items: [
+                                  { key: "p", kind: "image", label: `${sceneNo(s.id)} 이전 이미지`, src: prev.image ? url(prev.image, prev.v) : "" },
+                                  { key: "n", kind: "image", label: `${sceneNo(s.id)} 새 이미지`, src: va?.image ? url(va.image, va.v) : "" },
+                                ],
+                                index: c.keep === "prev" ? 0 : 1,
+                              })
+                            }
+                          >
+                            {c.src && <img src={c.src} alt="" />}
+                            <span className="compare-tag">{c.tag}</span>
+                          </div>
+                          <button className={`btn small ${c.keep === "new" ? "primary" : ""}`} disabled={lock || !!va?.busy} onClick={() => choose(s.id, c.keep)}>
+                            {c.tag} 것 사용
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={`media-box ${va?.image ? "zoomable" : ""}`}
+                    style={{ aspectRatio: ratio }}
+                    onClick={() => va?.image && openItem(`${s.id}:image`)}
+                    title={va?.image ? "크게 보기" : ""}
+                  >
+                    {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">대기</span>}
+                    <BusyOverlay asset={va} kind="image" typical={prod.typical.image} now={now} />
+                  </div>
+                )}
                 <button
-                  className="icon-btn small-btn"
-                  disabled={vRunning || lock || !va?.video}
-                  title={va?.video ? "이 장면 영상만 다시 만들기" : "이미지 전체 승인 후 영상화됩니다"}
-                  onClick={() => remakeVideos([s.id])}
+                  className="btn small regen-btn"
+                  disabled={vRunning || lock || !!va?.busy}
+                  title="수정 지시를 넣어 이 장면 이미지만 다시 만들기"
+                  onClick={() => setEditing(editImage ? null : { kind: "image", sceneId: s.id })}
                 >
-                  ↻
+                  ↻ 이미지 수정
                 </button>
-                {va?.error && <div className="cell-error">{va.error}</div>}
+                {editImage && (
+                  <RegenForm
+                    kind="image"
+                    count={1}
+                    eta={parallelEta("image", 1, true)}
+                    cost={billable ? usd(imageCost([s.id])) : ""}
+                    disabled={vRunning || lock}
+                    note={anchorNote([s.id])}
+                    onCancel={() => setEditing(null)}
+                    onSubmit={(text) => makeImages([s.id], text)}
+                  />
+                )}
+                {va?.error && !va.busy && (
+                  <div className="cell-error">
+                    <ErrorText message={va.error} />
+                  </div>
+                )}
               </div>
+
+              <div className="media-cell">
+                {comparingVideo && prev ? (
+                  <div className="compare">
+                    <span className="small">
+                      <b>이전 / 새 영상 비교</b> — 쓸 것을 고르세요
+                    </span>
+                    <div className="compare-pair">
+                      {[
+                        { tag: "이전", src: prev.video ? url(prev.video, prev.v) : "", keep: "prev" as const },
+                        { tag: "새", src: va?.video ? url(va.video, va.v) : "", keep: "new" as const },
+                      ].map((c) => (
+                        <div key={c.tag} className="compare-item">
+                          <div
+                            className="media-box zoomable"
+                            style={{ aspectRatio: ratio }}
+                            onClick={() =>
+                              setView({
+                                items: [
+                                  { key: "p", kind: "video", label: `${sceneNo(s.id)} 이전 영상`, src: prev.video ? url(prev.video, prev.v) : "" },
+                                  { key: "n", kind: "video", label: `${sceneNo(s.id)} 새 영상`, src: va?.video ? url(va.video, va.v) : "" },
+                                ],
+                                index: c.keep === "prev" ? 0 : 1,
+                              })
+                            }
+                          >
+                            {c.src && (
+                              <video
+                                src={c.src}
+                                preload="metadata"
+                                muted
+                                loop
+                                playsInline
+                                onMouseEnter={(e) => e.currentTarget.play()}
+                                onMouseLeave={(e) => e.currentTarget.pause()}
+                              />
+                            )}
+                            <span className="compare-tag">{c.tag}</span>
+                          </div>
+                          <button className={`btn small ${c.keep === "new" ? "primary" : ""}`} disabled={lock || !!va?.busy} onClick={() => choose(s.id, c.keep)}>
+                            {c.tag} 것 사용
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={`media-box ${va?.video ? "zoomable" : ""}`}
+                    style={{ aspectRatio: ratio }}
+                    onClick={() => va?.video && openItem(`${s.id}:video`)}
+                    title={va?.video ? "크게 보기" : ""}
+                  >
+                    {va?.video ? (
+                      <video
+                        src={url(va.video, va.v)}
+                        preload="metadata"
+                        muted
+                        loop
+                        playsInline
+                        onMouseEnter={(e) => e.currentTarget.play()}
+                        onMouseLeave={(e) => e.currentTarget.pause()}
+                      />
+                    ) : (
+                      <span className="muted small">{va?.image ? "전체 승인 후 영상화" : "대기"}</span>
+                    )}
+                    <BusyOverlay asset={va} kind="video" typical={prod.typical.video} now={now} />
+                  </div>
+                )}
+                <button
+                  className="btn small regen-btn"
+                  disabled={vRunning || lock || !va?.video || !!va?.busy}
+                  title={va?.video ? "수정 지시를 넣어 이 장면 영상만 다시 만들기" : "이미지 전체 승인 후 영상화됩니다"}
+                  onClick={() => setEditing(editVideo ? null : { kind: "video", sceneId: s.id })}
+                >
+                  ↻ 영상 수정
+                </button>
+                {editVideo && (
+                  <RegenForm
+                    kind="video"
+                    count={1}
+                    eta={parallelEta("video", 1, true)}
+                    cost={billable ? usd(videoCost([s.id])) : ""}
+                    disabled={vRunning || lock}
+                    onCancel={() => setEditing(null)}
+                    onSubmit={(text) => remakeVideos([s.id], text)}
+                  />
+                )}
+              </div>
+
               <div className="audio-cell">
+                {sa?.busy && (
+                  <div className="audio-busy small">
+                    <span className="spinner tiny" />
+                    {sa.busy === "queued" ? "순서 대기 중" : `음성 만드는 중 · ${fmtDur(now - sa.busy_since)} 경과`}
+                  </div>
+                )}
                 {sa?.lines.length ? (
                   <>
                     {sa.lines.map((line, n) => (
@@ -640,21 +937,31 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                         {line.audio && <audio controls preload="none" src={url(line.audio, line.v || sa.v)} />}
                         <div className="row">
                           <button className="btn small ghost" disabled={sRunning || lock} onClick={() => regenLine(s.id, n + 1)}>
-                            {busy === `${s.id}-${n + 1}` ? "만드는 중…" : "↻ 이 문장만"}
+                            {busy === `${s.id}-${n + 1}` ? (
+                              <>
+                                <span className="spinner tiny" /> 만드는 중… ({range(prod.typical.line)})
+                              </>
+                            ) : (
+                              "↻ 이 문장만"
+                            )}
                           </button>
                         </div>
-                        {line.error && <div className="cell-error">{line.error}</div>}
+                        {line.error && (
+                          <div className="cell-error">
+                            <ErrorText message={line.error} />
+                          </div>
+                        )}
                       </div>
                     ))}
                     <span className={`small ${over ? "over" : "muted"}`}>
                       합계 {sa.duration.toFixed(1)}s / 장면 {dur.toFixed(1)}s{over && " · 장면보다 김"}
                     </span>
                   </>
-                ) : sa ? (
+                ) : sa?.v ? (
                   <span className="muted small">대사 없음 (무음)</span>
-                ) : (
+                ) : !sa?.busy ? (
                   <span className="muted small">대기</span>
-                )}
+                ) : null}
                 <button className="icon-btn small-btn" disabled={sRunning || lock} title="이 장면 음성 전체 다시 만들기" onClick={() => makeSound([s.id])}>
                   ↻
                 </button>
@@ -664,30 +971,57 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
         })}
       </section>
 
+      <section className="card reset-card">
+        <div className="row wrap">
+          <b className="small">초기화</b>
+          <span className="muted small">만든 결과를 지우고 처음부터 다시 시작합니다. 고른 모델·목소리·배속은 남습니다.</span>
+          <span className="push" />
+          <button className="btn small ghost danger" disabled={vRunning || lock} onClick={() => reset("visual")}>
+            이미지·영상 초기화
+          </button>
+          <button className="btn small ghost danger" disabled={sRunning || lock} onClick={() => reset("sound")}>
+            음성 초기화
+          </button>
+          <button className="btn small danger" disabled={vRunning || sRunning || lock} onClick={() => reset("all")}>
+            영상 제작 단계 전체 초기화
+          </button>
+        </div>
+      </section>
+
       <footer className="action-bar">
         <span className="muted">
           {st.ready
             ? "영상 클립과 음성이 모두 준비되었습니다. 마음에 안 드는 장면·문장만 다시 만든 뒤 전체 승인하세요."
-            : `영상 클립 ${st.videos}/${st.total} · 장면 음성 ${st.audios}/${st.total}`}
+            : `이미지 ${st.images}/${st.total} · 영상 클립 ${st.videos}/${st.total} · 장면 음성 ${st.audios}/${st.total} · 다 만들지 않아도 지금까지 만든 것만 받을 수 있습니다`}
+          {st.comparing ? ` · 이전/새 결과를 고를 장면 ${st.comparing}개` : ""}
           {" · 이미지·영상을 누르면 전체화면으로 봅니다"}
         </span>
         <button
           className="btn primary"
-          disabled={!st.ready || vRunning || sRunning || lock}
-          onClick={() => run("확정 중", async () => onNext(await api.confirmProduction(project.id)))}
+          disabled={vRunning || sRunning || lock}
+          title={vRunning || sRunning ? "진행 중인 작업이 끝난 뒤 넘어갈 수 있습니다" : ""}
+          onClick={() => {
+            if (!st.ready) {
+              const missing = [
+                st.images < st.total && `이미지 ${st.total - st.images}개`,
+                st.videos < st.total && `영상 클립 ${st.total - st.videos}개`,
+                st.audios < st.total && `장면 음성 ${st.total - st.audios}개`,
+              ].filter(Boolean);
+              if (
+                !confirm(
+                  `아직 만들지 않은 결과물이 있습니다: ${missing.join(", ")}.\n\n지금까지 만든 것만 다운로드 목록에 나옵니다. 나중에 5단계로 돌아와 이어서 만들 수 있습니다.\n\n다음 단계로 넘어갈까요?`,
+                )
+              )
+                return;
+            }
+            run("확정 중", async () => onNext(await api.confirmProduction(project.id)));
+          }}
         >
-          {project.completed ? "결과물 다운로드 →" : "전체 승인 · 결과물 받기 →"}
+          {project.completed ? "결과물 다운로드 →" : st.ready ? "전체 승인 · 결과물 받기 →" : "지금까지 만든 것으로 결과물 받기 →"}
         </button>
       </footer>
 
-      {view !== null && view >= 0 && (
-        <Lightbox
-          items={viewItems}
-          index={view}
-          onIndex={setView}
-          onClose={closeView}
-        />
-      )}
+      {view && <Lightbox items={view.items} index={view.index} onIndex={(i) => setView({ ...view, index: i })} onClose={closeView} />}
     </div>
   );
 }

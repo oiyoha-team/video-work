@@ -34,6 +34,8 @@ export default function App() {
   const [reloadKey, setReloadKey] = useState(0);
   const initialHash = useRef(new URLSearchParams(location.hash.slice(1)));
   const [ready, setReady] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [keepProduct, setKeepProduct] = useState(true);
 
   const refreshProjects = useCallback(() => api.listProjects().then(setProjects).catch(() => {}), []);
   const refreshGates = useCallback(() => {
@@ -132,6 +134,22 @@ export default function App() {
     refreshGates();
   };
 
+  /** 프로젝트 전체 초기화: 이름만 남기고 1단계부터 다시 */
+  const resetProject = async () => {
+    if (!project) return;
+    try {
+      const p = await api.resetProject(project.id, keepProduct);
+      setResetOpen(false);
+      setProject(p);
+      setView(1);
+      setReloadKey((k) => k + 1);
+      refreshProjects();
+      refreshGates();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   const advance = (p: Project, next: number) => {
     setProject(p);
     setView(next);
@@ -182,6 +200,11 @@ export default function App() {
           )}
           <NotificationCenter gates={pendingGates} flowEnabled={!!status?.flow_enabled} onResolve={resolveGate} onOpen={openGate} />
           {project && (
+            <button className="btn ghost danger" onClick={() => setResetOpen(true)} title="이름만 남기고 1단계부터 다시 시작">
+              프로젝트 초기화
+            </button>
+          )}
+          {project && (
             <button className="btn ghost" onClick={closeProject}>
               프로젝트 목록
             </button>
@@ -190,6 +213,34 @@ export default function App() {
       </header>
 
       {error && <ErrorBox message={error} onClose={() => setError("")} />}
+
+      {resetOpen && project && (
+        <div className="modal-backdrop" onClick={() => setResetOpen(false)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal>
+            <h3>프로젝트 전체 초기화</h3>
+            <p className="small">
+              <b>'{project.name}'</b>의 레퍼런스 영상·분석, 스크립트, 만든 이미지·영상·음성을 모두 지우고 1단계부터 다시 시작합니다. 프로젝트 이름은
+              남습니다. <b>되돌릴 수 없습니다.</b>
+            </p>
+            <label className="row small">
+              <input type="radio" checked={keepProduct} onChange={() => setKeepProduct(true)} /> 2단계 제품 정보·사진은 남기기
+            </label>
+            <label className="row small">
+              <input type="radio" checked={!keepProduct} onChange={() => setKeepProduct(false)} /> 제품 정보까지 모두 지우기
+            </label>
+            <p className="muted small">제품 라이브러리에 저장한 제품은 어느 쪽이든 지워지지 않습니다.</p>
+            <div className="row">
+              <span className="push" />
+              <button className="btn ghost" onClick={() => setResetOpen(false)}>
+                취소
+              </button>
+              <button className="btn danger" onClick={resetProject}>
+                초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!project ? (
         <main className="home">

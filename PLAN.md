@@ -351,6 +351,19 @@ TXT 출력 예시:
 
 ---
 
+## 19. 레퍼런스 '참고' 방식 · 수정 지시 · 진행 표시 · 이전/새 비교 · 오류 원인 · 초기화 (2026-11-22, v2026.11.22)
+
+- **레퍼런스 카피 → 참고:** 기존에는 레퍼런스 장면 프레임을 이미지 AI에 넘겨 인물·제품만 바꿔 넣어, 의상·배경·질감이 거의 같은 결과가 나왔다.
+  - 장면 설계(`visual/briefs.py`)는 레퍼런스의 그림체·페르소나·컨셉·후킹·전개 구성만 추상적으로 뽑는다(`style_guide`, `concept_note`). 배경(`world`)·인물(`character`)·장면 구도는 새로 짠다. 스튜디오·작가 이름은 쓰지 않는다.
+  - 생성 순서(`visual/pipeline.py`): 장면 설계 → **기준 장면(첫 장면)** → 인물 기준(첫 장면에 인물이 없을 때만) → 나머지 장면(동시 3개).
+  - 참고 이미지(`visual/engine.py` `_pick_refs`): 기준 장면 = 레퍼런스 그림체 견본 1장(기준 장면과 다른 구간 프레임, "그림체만" 지시) + 제품 사진. 나머지 = 기준 장면 + 제품 사진. 레퍼런스 장면 프레임은 실제 생성에 넘기지 않는다(임시 엔진만 사용).
+- **수정 지시:** 이미지·영상 재생성에 `instruction`. Claude가 기존 영어 프롬프트를 지시대로 고친다(`revise_image_prompt` / `revise_video_prompt`). 선택한 여러 장면에 같은 지시를 줄 수 있다.
+- **이전/새 비교:** 다시 만들면 직전 결과를 `VisualAsset.prev`에 남긴다. `/visual/scenes/{id}/choose {keep: new|prev}`로 고르고, 안 쓰는 파일은 지운다. 전체 승인 때 남은 비교는 새 결과로 확정한다. 파일 이름은 `visual/{장면}_{시각}.jpg|mp4`.
+- **진행 표시:** `JobState`에 `started_at`, `eta_min/eta_max/eta_at`, `done/total`을 둔다. 장면별 `busy`(queued|image|video|audio)와 `busy_since`가 있다. `timings.py`가 실제 소요 시간을 종류·모델별 최근 20건 기록해 남은 시간 범위를 계산한다(임시 엔진은 기록하지 않음).
+- **오류 원인:** `errors.py` `explain()`이 "무엇 실패 / 원인 / 해결 / [원문]" 형식으로 바꾼다. 비주얼·사운드·분석·스크립트 작업 오류에 적용한다.
+- **초기화:** `POST /production/reset {what: visual|sound|all}`(모델·목소리 설정은 유지). `POST /projects/{id}/reset {keep_product}`(이름만 남기고 1단계부터).
+- **Windows 저장 충돌:** 동시 저장 시 `PermissionError`가 나서 `store.write_json`이 임시 파일 이름을 겹치지 않게 하고 잠시 후 다시 시도한다.
+
 ## 18. 모든 이미지·영상 1080p 이상 (2026-11-18)
 
 - **이미지:** 해상도 옵션 중 1080p 이상에서 가장 낮은 것(대개 `2k`, Soul 2는 `1080p`)으로 요청합니다.

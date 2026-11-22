@@ -5,6 +5,7 @@
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from errors import explain
 from llm import claude_client
 from llm.claude_client import strict_object
 from schemas import JobState, Overall, ReferenceAnalysis, SceneDetail, Segment, SourceInfo
@@ -246,4 +247,4 @@ def run_analysis(project_id: str) -> None:
         gates.open_gate(project_id, "analysis", "\n".join(summary))
     except Exception as e:  # noqa: BLE001 — 어떤 오류든 UI에 표시
         traceback.print_exc()
-        _set_job(project_id, "error", 0, str(e) or e.__class__.__name__)
+        _set_job(project_id, "error", 0, explain(e, "레퍼런스 분석"))
