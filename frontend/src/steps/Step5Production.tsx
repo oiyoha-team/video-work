@@ -14,6 +14,11 @@ interface Props {
 const ASPECT_CSS: Record<string, string> = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1", "4:5": "4 / 5" };
 const AGE_LABEL: Record<string, string> = { child: "어린이", teenager: "10대", young_adult: "청년", middle_age: "중년", elder: "노년" };
 const usd = (n: number) => `$${n.toFixed(2)}`;
+const FOLLOW_LABEL: Record<string, string> = {
+  low: "약하게 — 역할만 참고, 컷 구성은 새로 (레퍼런스와 가장 다름)",
+  medium: "보통 (기본) — 컷마다 샷 크기·앵글·구도·동작을 레퍼런스 컷에 맞춤",
+  high: "강하게 — 구도·동작에 배경 종류·배치까지 레퍼런스 컷에 가깝게",
+};
 const range = ([lo, hi]: [number, number]) => `보통 ${fmtDur(lo)} ~ ${fmtDur(hi)}`;
 
 function TrackProgress({ job }: { job: JobState }) {
@@ -198,7 +203,7 @@ function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRef
   imageModel: string;
   videoModel: string;
   disabled: boolean;
-  onChange: (body: { image_model?: string; video_model?: string }) => void;
+  onChange: (body: { image_model?: string; video_model?: string; ref_follow?: string }) => void;
   onRefresh: () => void;
   refreshing: boolean;
 }) {
@@ -211,6 +216,7 @@ function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRef
         <select value={imageModel} disabled={disabled} onChange={(e) => onChange({ image_model: e.target.value })}>
           {models.image.map((m) => (
             <option key={m.id} value={m.id}>
+              {m.recommended ? "★ 추천 · " : ""}
               {m.label} · {m.usd != null ? `장당 $${m.usd}` : "사용량 기준 과금"} · 참고 이미지 {m.max_images}장
             </option>
           ))}
@@ -221,6 +227,7 @@ function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRef
         <select value={videoModel} disabled={disabled} onChange={(e) => onChange({ video_model: e.target.value })}>
           {models.video.map((m) => (
             <option key={m.id} value={m.id}>
+              {m.recommended ? "★ 추천 · " : ""}
               {m.label} · {m.usd_per_sec != null ? `초당 $${m.usd_per_sec}` : "가격 미확인"}
               {m.resolution ? ` · ${m.resolution}` : ""} · {m.min_sec}~{m.max_sec}초
             </option>
@@ -242,8 +249,9 @@ function ModelPicker({ models, imageModel, videoModel, disabled, onChange, onRef
 const IMAGE_HINT = "예: 제품을 두 손으로 들고 카메라 쪽으로 내밀기 / 배경을 밝은 욕실로 / 표정을 더 놀란 얼굴로";
 const VIDEO_HINT = "예: 카메라가 천천히 제품 쪽으로 다가가기 / 인물이 웃으며 고개 끄덕이기 / 움직임을 더 작게";
 
-function RegenForm({ kind, count, eta, cost, onSubmit, onCancel, disabled, note }: {
+function RegenForm({ kind, scene, count, eta, cost, onSubmit, onCancel, disabled, note }: {
   kind: "image" | "video";
+  scene?: string;
   count: number;
   eta: string;
   cost: string;
@@ -257,13 +265,14 @@ function RegenForm({ kind, count, eta, cost, onSubmit, onCancel, disabled, note 
   return (
     <div className="regen-form" onClick={(e) => e.stopPropagation()}>
       <b className="small">
+        {scene ? `${scene} 장면 ` : ""}
         {count > 1 ? `선택한 ${count}개 장면 ` : ""}
         {what} 다시 만들기
       </b>
       <AutoTextarea
         value={text}
         onChange={setText}
-        minRows={2}
+        minRows={3}
         placeholder={`수정 지시 (선택) — 비워 두면 같은 설계로 다시 만듭니다.\n${kind === "image" ? IMAGE_HINT : VIDEO_HINT}`}
       />
       {note && <span className="small warn-text">{note}</span>}
@@ -278,6 +287,58 @@ function RegenForm({ kind, count, eta, cost, onSubmit, onCancel, disabled, note 
         <button className="btn small ghost" onClick={onCancel}>
           취소
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** 다시 만든 장면의 이전 / 새 결과를 크게 나란히 보여 주고 고르게 한다 (장면 줄 아래 전체 폭) */
+function ComparePanel({ kind, scene, ratio, prevSrc, newSrc, prevNote, newNote, disabled, onChoose, onZoom }: {
+  kind: "image" | "video";
+  scene: string;
+  ratio: string;
+  prevSrc: string;
+  newSrc: string;
+  prevNote: string;
+  newNote: string;
+  disabled: boolean;
+  onChoose: (keep: "new" | "prev") => void;
+  onZoom: (items: ViewItem[], index: number) => void;
+}) {
+  const what = kind === "image" ? "이미지" : "영상";
+  const items: ViewItem[] = [
+    { key: "p", kind, label: `${scene} 이전 ${what}`, src: prevSrc },
+    { key: "n", kind, label: `${scene} 새 ${what}`, src: newSrc },
+  ];
+  const sides = [
+    { tag: "이전", src: prevSrc, keep: "prev" as const, note: prevNote, index: 0 },
+    { tag: "새", src: newSrc, keep: "new" as const, note: newNote, index: 1 },
+  ];
+  return (
+    <div className="row-panel compare-panel">
+      <div className="row wrap">
+        <b>
+          {scene} 이전 / 새 {what} 비교
+        </b>
+        <span className="muted small">쓸 것을 고르세요 · 누르면 크게 보고 ← →로 번갈아 볼 수 있습니다 · 고르지 않고 전체 승인하면 새 것으로 확정됩니다</span>
+      </div>
+      <div className="compare-pair">
+        {sides.map((c) => (
+          <div key={c.tag} className={`compare-item ${c.keep}`}>
+            <div className="media-box zoomable" style={{ aspectRatio: ratio }} onClick={() => onZoom(items, c.index)} title="크게 보기">
+              {kind === "image" ? (
+                <img src={c.src} alt="" />
+              ) : (
+                <video src={c.src} preload="metadata" muted loop playsInline autoPlay />
+              )}
+              <span className="compare-tag">{c.tag}</span>
+            </div>
+            {c.note ? <span className="small muted compare-note">수정 지시: {c.note}</span> : <span className="small muted compare-note">-</span>}
+            <button className={`btn small ${c.keep === "new" ? "primary" : ""}`} disabled={disabled} onClick={() => onChoose(c.keep)}>
+              {c.tag} 것 사용
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -542,6 +603,23 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                 onRefresh={() => run("models", async () => setModels(await api.visualModels(true)))}
                 refreshing={busy === "models"}
               />
+              <label className="field">
+                <span>레퍼런스 장면 구도 반영</span>
+                <select
+                  value={prod.visual.ref_follow || "medium"}
+                  disabled={vRunning || lock}
+                  onChange={(e) => run("모델 변경 중", async () => setProd(await api.setModels(project.id, { ref_follow: e.target.value })))}
+                >
+                  {Object.entries(FOLLOW_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="muted small">
+                그림체·인물·색감은 어느 단계든 레퍼런스를 복사하지 않습니다. 바꾼 뒤 [이미지 전체 새로 만들기]를 하면 장면 설계부터 반영됩니다.
+              </span>
               {estimate && (
                 <div className="estimate">
                   전체 예상 비용 <b>{usd(estimate.total_usd)}</b>
@@ -759,71 +837,24 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               </div>
 
               <div className="media-cell">
-                {comparingImage && prev ? (
-                  <div className="compare">
-                    <span className="small">
-                      <b>이전 / 새 이미지 비교</b> — 쓸 것을 고르세요
-                    </span>
-                    <div className="compare-pair">
-                      {[
-                        { tag: "이전", src: prev.image ? url(prev.image, prev.v) : "", keep: "prev" as const, note: prev.instruction },
-                        { tag: "새", src: va?.image ? url(va.image, va.v) : "", keep: "new" as const, note: va?.instruction ?? "" },
-                      ].map((c) => (
-                        <div key={c.tag} className="compare-item">
-                          <div
-                            className="media-box zoomable"
-                            style={{ aspectRatio: ratio }}
-                            onClick={() =>
-                              setView({
-                                items: [
-                                  { key: "p", kind: "image", label: `${sceneNo(s.id)} 이전 이미지`, src: prev.image ? url(prev.image, prev.v) : "" },
-                                  { key: "n", kind: "image", label: `${sceneNo(s.id)} 새 이미지`, src: va?.image ? url(va.image, va.v) : "" },
-                                ],
-                                index: c.keep === "prev" ? 0 : 1,
-                              })
-                            }
-                          >
-                            {c.src && <img src={c.src} alt="" />}
-                            <span className="compare-tag">{c.tag}</span>
-                          </div>
-                          <button className={`btn small ${c.keep === "new" ? "primary" : ""}`} disabled={lock || !!va?.busy} onClick={() => choose(s.id, c.keep)}>
-                            {c.tag} 것 사용
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    className={`media-box ${va?.image ? "zoomable" : ""}`}
-                    style={{ aspectRatio: ratio }}
-                    onClick={() => va?.image && openItem(`${s.id}:image`)}
-                    title={va?.image ? "크게 보기" : ""}
-                  >
-                    {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">대기</span>}
-                    <BusyOverlay asset={va} kind="image" typical={prod.typical.image} now={now} />
-                  </div>
-                )}
+                <div
+                  className={`media-box ${va?.image ? "zoomable" : ""} ${comparingImage ? "comparing" : ""}`}
+                  style={{ aspectRatio: ratio }}
+                  onClick={() => va?.image && openItem(`${s.id}:image`)}
+                  title={va?.image ? "크게 보기" : ""}
+                >
+                  {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">대기</span>}
+                  {comparingImage && <span className="compare-tag">비교 중 ↓</span>}
+                  <BusyOverlay asset={va} kind="image" typical={prod.typical.image} now={now} />
+                </div>
                 <button
-                  className="btn small regen-btn"
+                  className={`btn small regen-btn ${editImage ? "on" : ""}`}
                   disabled={vRunning || lock || !!va?.busy}
                   title="수정 지시를 넣어 이 장면 이미지만 다시 만들기"
                   onClick={() => setEditing(editImage ? null : { kind: "image", sceneId: s.id })}
                 >
                   ↻ 이미지 수정
                 </button>
-                {editImage && (
-                  <RegenForm
-                    kind="image"
-                    count={1}
-                    eta={parallelEta("image", 1, true)}
-                    cost={billable ? usd(imageCost([s.id])) : ""}
-                    disabled={vRunning || lock}
-                    note={anchorNote([s.id])}
-                    onCancel={() => setEditing(null)}
-                    onSubmit={(text) => makeImages([s.id], text)}
-                  />
-                )}
                 {va?.error && !va.busy && (
                   <div className="cell-error">
                     <ErrorText message={va.error} />
@@ -832,92 +863,36 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               </div>
 
               <div className="media-cell">
-                {comparingVideo && prev ? (
-                  <div className="compare">
-                    <span className="small">
-                      <b>이전 / 새 영상 비교</b> — 쓸 것을 고르세요
-                    </span>
-                    <div className="compare-pair">
-                      {[
-                        { tag: "이전", src: prev.video ? url(prev.video, prev.v) : "", keep: "prev" as const },
-                        { tag: "새", src: va?.video ? url(va.video, va.v) : "", keep: "new" as const },
-                      ].map((c) => (
-                        <div key={c.tag} className="compare-item">
-                          <div
-                            className="media-box zoomable"
-                            style={{ aspectRatio: ratio }}
-                            onClick={() =>
-                              setView({
-                                items: [
-                                  { key: "p", kind: "video", label: `${sceneNo(s.id)} 이전 영상`, src: prev.video ? url(prev.video, prev.v) : "" },
-                                  { key: "n", kind: "video", label: `${sceneNo(s.id)} 새 영상`, src: va?.video ? url(va.video, va.v) : "" },
-                                ],
-                                index: c.keep === "prev" ? 0 : 1,
-                              })
-                            }
-                          >
-                            {c.src && (
-                              <video
-                                src={c.src}
-                                preload="metadata"
-                                muted
-                                loop
-                                playsInline
-                                onMouseEnter={(e) => e.currentTarget.play()}
-                                onMouseLeave={(e) => e.currentTarget.pause()}
-                              />
-                            )}
-                            <span className="compare-tag">{c.tag}</span>
-                          </div>
-                          <button className={`btn small ${c.keep === "new" ? "primary" : ""}`} disabled={lock || !!va?.busy} onClick={() => choose(s.id, c.keep)}>
-                            {c.tag} 것 사용
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    className={`media-box ${va?.video ? "zoomable" : ""}`}
-                    style={{ aspectRatio: ratio }}
-                    onClick={() => va?.video && openItem(`${s.id}:video`)}
-                    title={va?.video ? "크게 보기" : ""}
-                  >
-                    {va?.video ? (
-                      <video
-                        src={url(va.video, va.v)}
-                        preload="metadata"
-                        muted
-                        loop
-                        playsInline
-                        onMouseEnter={(e) => e.currentTarget.play()}
-                        onMouseLeave={(e) => e.currentTarget.pause()}
-                      />
-                    ) : (
-                      <span className="muted small">{va?.image ? "전체 승인 후 영상화" : "대기"}</span>
-                    )}
-                    <BusyOverlay asset={va} kind="video" typical={prod.typical.video} now={now} />
-                  </div>
-                )}
+                <div
+                  className={`media-box ${va?.video ? "zoomable" : ""} ${comparingVideo ? "comparing" : ""}`}
+                  style={{ aspectRatio: ratio }}
+                  onClick={() => va?.video && openItem(`${s.id}:video`)}
+                  title={va?.video ? "크게 보기" : ""}
+                >
+                  {va?.video ? (
+                    <video
+                      src={url(va.video, va.v)}
+                      preload="metadata"
+                      muted
+                      loop
+                      playsInline
+                      onMouseEnter={(e) => e.currentTarget.play()}
+                      onMouseLeave={(e) => e.currentTarget.pause()}
+                    />
+                  ) : (
+                    <span className="muted small">{va?.image ? "전체 승인 후 영상화" : "대기"}</span>
+                  )}
+                  {comparingVideo && <span className="compare-tag">비교 중 ↓</span>}
+                  <BusyOverlay asset={va} kind="video" typical={prod.typical.video} now={now} />
+                </div>
                 <button
-                  className="btn small regen-btn"
+                  className={`btn small regen-btn ${editVideo ? "on" : ""}`}
                   disabled={vRunning || lock || !va?.video || !!va?.busy}
                   title={va?.video ? "수정 지시를 넣어 이 장면 영상만 다시 만들기" : "이미지 전체 승인 후 영상화됩니다"}
                   onClick={() => setEditing(editVideo ? null : { kind: "video", sceneId: s.id })}
                 >
                   ↻ 영상 수정
                 </button>
-                {editVideo && (
-                  <RegenForm
-                    kind="video"
-                    count={1}
-                    eta={parallelEta("video", 1, true)}
-                    cost={billable ? usd(videoCost([s.id])) : ""}
-                    disabled={vRunning || lock}
-                    onCancel={() => setEditing(null)}
-                    onSubmit={(text) => remakeVideos([s.id], text)}
-                  />
-                )}
               </div>
 
               <div className="audio-cell">
@@ -966,6 +941,51 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                   ↻
                 </button>
               </div>
+
+              {/* 이전/새 비교와 수정 지시는 장면 줄 아래 전체 폭으로 (좁은 칸에 넣으면 옆 칸과 겹친다) */}
+              {(comparingImage || comparingVideo) && prev && va && (
+                <ComparePanel
+                  kind={comparingImage ? "image" : "video"}
+                  scene={sceneNo(s.id)}
+                  ratio={ratio}
+                  prevSrc={url((comparingImage ? prev.image : prev.video) ?? "", prev.v)}
+                  newSrc={url((comparingImage ? va.image : va.video) ?? "", va.v)}
+                  prevNote={prev.instruction}
+                  newNote={va.instruction}
+                  disabled={lock || !!va.busy}
+                  onChoose={(keep) => choose(s.id, keep)}
+                  onZoom={(items, index) => setView({ items, index })}
+                />
+              )}
+              {editImage && (
+                <div className="row-panel">
+                  <RegenForm
+                    kind="image"
+                    scene={sceneNo(s.id)}
+                    count={1}
+                    eta={parallelEta("image", 1, true)}
+                    cost={billable ? usd(imageCost([s.id])) : ""}
+                    disabled={vRunning || lock}
+                    note={anchorNote([s.id])}
+                    onCancel={() => setEditing(null)}
+                    onSubmit={(text) => makeImages([s.id], text)}
+                  />
+                </div>
+              )}
+              {editVideo && (
+                <div className="row-panel">
+                  <RegenForm
+                    kind="video"
+                    scene={sceneNo(s.id)}
+                    count={1}
+                    eta={parallelEta("video", 1, true)}
+                    cost={billable ? usd(videoCost([s.id])) : ""}
+                    disabled={vRunning || lock}
+                    onCancel={() => setEditing(null)}
+                    onSubmit={(text) => remakeVideos([s.id], text)}
+                  />
+                </div>
+              )}
             </div>
           );
         })}

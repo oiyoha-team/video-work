@@ -34,9 +34,15 @@ BRIEF_SYSTEM = """당신은 숏폼 광고의 크리에이티브 디렉터 겸 �
   전개 구성(장면마다 맡은 역할: 후킹 → 문제 → 해결 → 증거 → 구매 유도 등).
 
 [절대 그대로 가져오지 않는 것]
-- 레퍼런스의 인물(얼굴·헤어·의상·액세서리), 배경·장소·인테리어·소품, 각 장면의 구체적인 구도와 배치,
-  화면 속 글자·로고. 레퍼런스 장면을 묘사하듯 쓰면 안 된다.
+- 레퍼런스의 인물(얼굴·헤어·의상·액세서리), 인테리어·소품의 디자인, 색감, 화면 속 글자·로고.
+  레퍼런스 장면을 그대로 묘사하듯 쓰면 안 된다. (장면 구도를 얼마나 따를지는 맨 위 [장면 구성] 지시를 따른다)
 - 스튜디오·작가·브랜드 이름(예: 디즈니, 픽사, 지브리)을 쓰지 말고 그 그림체의 특징을 말로 풀어 쓴다.
+
+[컷 다양성]
+- 인접한 장면끼리 샷 크기·앵글이 반복되지 않게 다양하게 짠다 (익스트림 클로즈업, 클로즈업, 미디엄, 와이드, 탑뷰, 로우앵글,
+  오버숄더, POV, 손·제품 인서트 등). 레퍼런스의 컷 리듬(샷 크기 변화)을 따른다.
+- 모든 장면이 같은 장소의 같은 각도가 되지 않게, world 안에서 장면마다 다른 위치·방향·거리를 쓴다.
+- 각 장면 prompt는 샷 크기와 카메라 앵글로 시작한다 (예: "Extreme close-up, low angle: ...").
 
 [출력]
 - style_guide (영어): 모든 장면 공통의 그림체·매체·렌더링·질감·색감·조명·카메라 느낌을 아주 구체적으로.
@@ -48,8 +54,8 @@ BRIEF_SYSTEM = """당신은 숏폼 광고의 크리에이티브 디렉터 겸 �
   그림체가 애니메이션이면 그 그림체의 캐릭터로 묘사. 레퍼런스에 사람이 전혀 없으면 빈 문자열.
 - concept_note (한국어, 3~5줄): "레퍼런스에서 가져온 것: …" / "새로 만든 것: …" 형식으로 사용자에게 보여 줄 요약.
 - scenes: 새 대사 장면마다
-  - prompt (영어): 이 장면 이미지 한 장. 새 대사의 내용을 보여 주는 새 장면을 설계한다. 레퍼런스 같은 위치 장면의
-    '역할'(후킹·문제 제기·시연·증거·CTA)과 샷 크기 정도만 참고하고, 구도·배경·행동은 world와 대사에 맞게 새로 정한다.
+  - prompt (영어): 이 장면 이미지 한 장. 새 대사의 내용을 보여 주는 장면을 설계한다. 같은 위치 레퍼런스 컷의
+    '역할'(후킹·문제 제기·시연·증거·CTA)을 살리고, 구도·앵글·동작은 맨 위 [장면 구성] 지시만큼 레퍼런스 컷을 따른다.
     첫 장면은 레퍼런스의 후킹 방식을 살려 시선을 끄는 장면으로. 모든 장면이 같은 style_guide·world·character를 따른다.
     인물이 나오면 character를 같은 말로 묘사하고, 제품이 나오면 손 대비 실제 크기와 자연스러운 합성을 묘사한다.
     글자·자막·로고 텍스트는 넣지 않는다.
@@ -153,6 +159,18 @@ def _overall_text(project_id: str) -> str:
     )
 
 
+FOLLOW_RULES = {
+    "low": "레퍼런스 장면의 역할과 샷 크기 정도만 참고하고, 구도·동작은 새로 설계한다.",
+    "medium": ("[장면 구성 — 레퍼런스 컷 따라가기: 보통]\n"
+               "각 장면은 같은 위치 레퍼런스 장면의 샷 크기, 카메라 앵글·높이·거리, 화면 속 피사체 위치·비중, 인물의 동작·제스처,"
+               " 제품 노출 방식을 따른다. 배경·소품·인물 외모·의상·색감은 world·character·style_guide로 새로 그린다."),
+    "high": ("[장면 구성 — 레퍼런스 컷 따라가기: 강하게]\n"
+             "각 장면은 같은 위치 레퍼런스 장면의 샷 크기, 카메라 앵글·높이·거리, 피사체 위치·비중, 동작·제스처, 제품 노출 방식에 더해"
+             " 배경의 종류와 배치(예: 욕실 거울 앞, 책상 위, 침대 위)까지 비슷하게 맞춘다. 단 인물의 얼굴·헤어·의상, 소품의 디자인,"
+             " 색감·그림체는 레퍼런스를 복사하지 않고 character·style_guide로 새로 그린다. world는 이 장소들을 아우르는 설정으로 쓴다."),
+}
+
+
 def build_briefs(project_id: str) -> Briefs:
     """Claude 미연결 시 레퍼런스 장면 요약을 그대로 쓴다 (임시)."""
     script = store.get_script(project_id)
@@ -167,7 +185,10 @@ def build_briefs(project_id: str) -> Briefs:
         return Briefs(scenes=out, product_roles=roles)
 
     product = store.get_product(project_id)
+    follow = store.get_production(project_id).visual.ref_follow or "medium"
     lines = [
+        FOLLOW_RULES.get(follow, FOLLOW_RULES["medium"]),
+        "",
         f"화면 비율: {script.meta.aspect_ratio}",
         "[레퍼런스 영상 전체 분석 — 빌려 올 특징]",
         _overall_text(project_id),
@@ -176,13 +197,20 @@ def build_briefs(project_id: str) -> Briefs:
         f"제품 특징: {' / '.join(product.features) or '-'}",
         f"추가 정보(크기 등): {product.extra or '-'}",
         "",
-        "[새 영상 장면 — 장면마다 prompt를 새로 설계. 괄호 안은 같은 위치 레퍼런스 장면의 역할·샷 크기(참고만)]",
+        "[새 영상 장면 — 장면마다 prompt를 설계. '레퍼런스 컷'은 같은 위치 레퍼런스 장면의 구성 정보]",
     ]
     for s in script.scenes:
         ref = reference_for(project_id, s.ref_segment)
-        ref_hint = f"레퍼런스 역할 {s.role or '-'} · 샷 {ref.get('shot_type', '-') if ref else '-'}"
+        d = (ref or {}).get("detail") or {}
+        ref_hint = [f"역할 {s.role or '-'}", f"샷 {ref.get('shot_type', '-') if ref else '-'}"]
+        if follow in ("medium", "high") and ref:
+            ref_hint += [f"구도·앵글: {d.get('composition') or '-'}", f"동작·제스처: {d.get('action') or '-'}",
+                         f"제품 노출: {d.get('product') or '-'}"]
+        if follow == "high" and ref:
+            ref_hint.append(f"배경 종류·배치: {d.get('background') or '-'}")
         lines.append(
-            f"[scene_id={s.id}] {s.start:.1f}–{s.end:.1f}초 ({ref_hint})\n"
+            f"[scene_id={s.id}] {s.start:.1f}–{s.end:.1f}초\n"
+            f"  레퍼런스 컷: {' / '.join(ref_hint)}\n"
             f"  새 대사: {' / '.join(split_sentences(s.dialogue)) or '(없음)'}"
         )
     content: list[dict] = [{"type": "text", "text": "\n".join(lines)}]

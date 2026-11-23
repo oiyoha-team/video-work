@@ -39,6 +39,7 @@ class SceneContext:
     style_frames: list[Path] = field(default_factory=list)  # 기준 장면을 만들 때만: 레퍼런스 그림체 견본
     anchor_image: Path | None = None  # 기준 장면 이미지 (기준 장면 자신을 만들 때는 None)
     video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트
+    ref_follow: str = "medium"  # low면 레퍼런스 컷을 넘기지 않음, medium/high면 구도 참고로 넘김
 
 
 class VisualEngine(Protocol):
@@ -141,8 +142,16 @@ _STYLE_NOTE = ("a STYLE SAMPLE from another video. Borrow ONLY its art style / m
                "lighting mood and image quality. Do NOT reproduce anything in it: not its people, faces, hairstyles, clothing, "
                "background, room, props, layout or composition. Create a completely new scene.")
 _ANCHOR_NOTE = ("the KEY FRAME of this same ad (scene 1). Keep exactly its art style, rendering, color palette, lighting mood "
-                "and world, and the same character identity (face, hair, outfit) if a person appears. Create a NEW shot as "
-                "described — new camera angle and action — not a copy of this frame.")
+                "and the same character identity (face, hair, outfit) if a person appears. Do NOT reuse its camera angle, "
+                "framing, shot size or composition — this is a different shot, composed as described.")
+_LAYOUT_NOTES = {
+    "medium": ("a SHOT LAYOUT reference from another video. Match ONLY its shot size, camera angle and height, framing, "
+               "where the subject sits in the frame, and the pose / gesture. Do NOT copy its people (face, hair, clothing), "
+               "background, props, colors or art style — those come from the text and the key frame."),
+    "high": ("a SHOT LAYOUT reference from another video. Match its shot size, camera angle and height, framing, subject "
+             "placement, pose / gesture and the general kind and arrangement of the setting, but redraw everything in this "
+             "ad's art style with this ad's character, outfit and colors. Do NOT copy faces, hairstyles, clothing, logos or text."),
+}
 _CAST_NOTE = "the CHARACTER of this ad. Keep exactly this character's face, hairstyle, skin tone and outfit."
 _HAND_NOTE = "our product held in a real adult hand. It shows the product's TRUE SIZE relative to a hand: keep exactly this scale."
 _PACK_NOTE = "our product packaging. Keep its shape, colors and label design recognizable, rendered in this image's art style."
@@ -174,6 +183,10 @@ def _pick_refs(ctx: SceneContext, limit: int) -> list[tuple[Path, str]]:
             refs.append((ctx.cast_image, _CAST_NOTE))
     else:
         refs += [(p, _STYLE_NOTE) for p in ctx.style_frames[:1]]
+    # 컷 다양성: 같은 위치 레퍼런스 장면의 구도(샷 크기·앵글·배치·동작)만 참고
+    layout = _LAYOUT_NOTES.get(ctx.ref_follow)
+    if layout and ctx.ref_frame and ctx.ref_frame.exists():
+        refs.append((ctx.ref_frame, layout))
     refs += [(p, _HAND_NOTE) for p in hand[:1]] + [(p, _PACK_NOTE) for p in pack] + [(p, _OTHER_NOTE) for p in other] + [(p, _HAND_NOTE) for p in hand[1:]]
     return refs[:limit]
 

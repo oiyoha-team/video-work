@@ -532,8 +532,11 @@ def visual_models(refresh: bool = False):
     if visual_engine.get_engine().name != "higgsfield":
         return {"updated_at": None, "image": [], "video": []}
     cat = visual_catalog.refresh() if refresh else visual_catalog.get()
-    img = [{"id": s["id"], "label": s["label"], "usd": s["usd"], "max_images": s["max_images"]} for s in cat["image"].values()]
+    rec = config.RECOMMENDED_MODELS
+    img = [{"id": s["id"], "label": s["label"], "usd": s["usd"], "max_images": s["max_images"], "recommended": s["id"] in rec}
+           for s in cat["image"].values()]
     vid = [{"id": s["id"], "label": s["label"], "usd_per_sec": s["usd_per_sec"], "resolution": s["resolution"],
+            "recommended": s["id"] in rec,
             "min_sec": s["dur_enum"][0] if s["dur_enum"] else s["dur_min"], "max_sec": s["dur_enum"][-1] if s["dur_enum"] else s["dur_max"]}
            for s in cat["video"].values()]
     return {"updated_at": cat.get("updated_at"), "image": img, "video": vid,
@@ -543,6 +546,7 @@ def visual_models(refresh: bool = False):
 class ModelBody(BaseModel):
     image_model: str | None = None
     video_model: str | None = None
+    ref_follow: str | None = None  # low | medium | high (레퍼런스 장면 구도 반영 정도)
 
 
 @app.put("/api/projects/{pid}/visual/model")
@@ -551,12 +555,16 @@ def set_models(pid: str, body: ModelBody):
         raise ValueError("지원하지 않는 이미지 모델입니다.")
     if body.video_model and not visual_catalog.spec("video", body.video_model):
         raise ValueError("지원하지 않는 영상 모델입니다.")
+    if body.ref_follow and body.ref_follow not in ("low", "medium", "high"):
+        raise ValueError("ref_follow는 low, medium, high 중 하나여야 합니다.")
     with store.lock(pid):
         prod = store.get_production(pid)
         if body.image_model:
             prod.visual.image_model = body.image_model
         if body.video_model:
             prod.visual.video_model = body.video_model
+        if body.ref_follow:
+            prod.visual.ref_follow = body.ref_follow
         store.save_production(pid, prod)
     return get_production(pid)
 

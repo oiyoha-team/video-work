@@ -81,6 +81,7 @@ def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
         style_frames=[] if anchor_image else style_frames(project_id, scene.ref_segment),
         anchor_image=anchor_image,
         video_prompt=asset.video_prompt,
+        ref_follow=visual.ref_follow or "medium",
     )
 
 
@@ -456,5 +457,6 @@ def reset(project_id: str) -> None:
     shutil.rmtree(store.project_dir(project_id) / "visual", ignore_errors=True)
     with store.lock(project_id):
         prod = store.get_production(project_id)
-        prod.visual = VisualTrack(image_model=prod.visual.image_model, video_model=prod.visual.video_model)
+        prod.visual = VisualTrack(image_model=prod.visual.image_model, video_model=prod.visual.video_model,
+                                  ref_follow=prod.visual.ref_follow)
         store.save_production(project_id, prod)

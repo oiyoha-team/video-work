@@ -27,6 +27,9 @@ REQ_STAMP = ROOT / ".venv" / ".requirements.sha"
 DEPS_STAMP = FRONTEND / "node_modules" / ".deps.sha"
 BUILD_STAMP = DIST / ".build.sha"
 
+# 기본값이 바뀐 설정: .env에 예전 기본값이 그대로 있으면 .env.example의 새 기본값으로 바꾼다
+OLD_DEFAULTS = {"HIGGSFIELD_VIDEO_MODEL": "wan/v2.7/image-to-video"}
+
 # 비어 있으면 실행할 때 물어볼 키: (이름, 설명)
 KEYS = [
     ("HIGGSFIELD_API_KEY", "힉스필드 API 키 (이미지·영상 생성, '키ID:시크릿' 형식)"),
@@ -88,10 +91,15 @@ def sync_env() -> list[str]:
     # 예전 배포본(2026-10)의 임시 엔진 고정 설정을 비운다 → 키 유무로 자동 선택
     cleaned = re.sub(r"(?m)^(VISUAL_ENGINE)=\s*mock\s*$", r"\1=", env)
     cleaned = re.sub(r"(?m)^(SOUND_ENGINE)=\s*system\s*$", r"\1=", cleaned)
+    # 예전 기본 영상 모델(Wan 2.7)이 그대로 적혀 있으면 새 기본값으로 (사용자가 직접 바꾼 값은 건드리지 않음)
+    for key, old_default in OLD_DEFAULTS.items():
+        new_default = _env_value(_read(ENV_EXAMPLE), key)
+        if new_default:
+            cleaned = re.sub(rf"(?m)^{key}=\s*{re.escape(old_default)}\s*$", f"{key}={new_default}", cleaned)
     if cleaned != env:
         env = cleaned
         _write(ENV, env)
-        _say("예전 '임시 엔진 고정' 설정을 해제했습니다 (키가 있으면 힉스필드·타입캐스트 사용)")
+        _say("예전 설정을 새 버전에 맞게 정리했습니다 (임시 엔진 고정 해제 · 바뀐 기본 모델 반영)")
     if added:
         _write(ENV, env.rstrip("\n") + "\n\n# ── 업데이트로 추가된 설정 ──\n" + "\n".join(block) + "\n")
     return added

@@ -138,7 +138,7 @@ export const api = {
     request<{ url: string; text: string }>("POST", `${P(pid)}/sound/preview`, body),
   estimate: (pid: string) => request<Estimate>("GET", `${P(pid)}/production/estimate`),
   visualModels: (refresh = false) => request<VisualModels>("GET", `/api/visual/models${refresh ? "?refresh=true" : ""}`),
-  setModels: (pid: string, body: { image_model?: string; video_model?: string }) => request<Production>("PUT", `${P(pid)}/visual/model`, body),
+  setModels: (pid: string, body: { image_model?: string; video_model?: string; ref_follow?: string }) => request<Production>("PUT", `${P(pid)}/visual/model`, body),
   listVoices: () => request<TypecastVoice[]>("GET", "/api/voices"),
   confirmProduction: (pid: string) => request<Project>("POST", `${P(pid)}/production/confirm`),
 

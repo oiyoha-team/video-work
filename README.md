@@ -73,7 +73,7 @@ ANTHROPIC_API_KEY=sk-ant-...
    - 새로 생긴 설정 칸을 `.env`에 추가합니다.
    - 비어 있는 API 키(힉스필드·타입캐스트)를 물어봅니다. 붙여넣고 Enter를 누르세요.
    - 필요한 패키지를 설치하고 화면을 새로 만듭니다. 처음 한 번은 1~2분 걸릴 수 있습니다.
-4. 화면 왼쪽 위의 버전(예: `v2026.11.23`)이 새 버전과 같은지 확인합니다.
+4. 화면 왼쪽 위의 버전(예: `v2026.11.24`)이 새 버전과 같은지 확인합니다.
    - 예전 프로그램 창을 켜 둔 채 업데이트해도 괜찮습니다. `2_실행하기`가 예전 프로그램을 알아채고 끈 뒤 새 버전으로 실행합니다.
    - 그래도 버전이 그대로라면 브라우저에서 `Ctrl + F5`를 눌러 새로고침하세요.
 
@@ -157,7 +157,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 - **모델 선택:** 이미지 모델과 영상 모델을 5단계 화면에서 직접 고릅니다. 가격도 함께 보입니다.
   - **화질:** 모든 이미지·영상은 1080p 이상으로 만듭니다. 이미지는 2k(9:16 기준 약 1512×2688), 영상은 1080p(1080×1920)로 요청합니다. 1080p를 낼 수 없는 모델(예: Kling 3.0 Standard, Kling 4.0 Flash)은 목록에 나오지 않습니다.
   - 모델 목록은 힉스필드에서 **12시간마다 자동으로 갱신**되므로, 새 모델이 나오면 따로 손대지 않아도 목록에 나타납니다. [지금 갱신]으로 바로 받을 수도 있습니다.
-  - 기본값은 이미지 GPT Image 2.5 Flare(힉스필드 목록 이름: Marketing Studio Image · flare), 영상 Wan 2.7입니다.
+  - 기본값은 이미지 GPT Image 2.5 Flare(힉스필드 목록 이름: Marketing Studio Image · flare), 영상 Kling 2.5 Turbo Pro입니다(목록에 ★ 추천 표시).
 - **이미지:** 그림체·배경 설정·장면 설계와 함께 참고 이미지를 넘깁니다. 첫 장면은 레퍼런스 그림체 견본 1장(인물·배경·구도는 쓰지 말라고 지시) + 제품 사진, 나머지 장면은 기준 장면 + 제품 사진입니다.
   - 참고 이미지는 **최대 5장**입니다. 6장 이상 넣으면 생성이 실패하는 것을 확인했습니다.
 - **영상:** 클립 길이는 장면 길이에 맞춥니다. 모델 최소 길이보다 짧은 장면은 최소 길이로 만듭니다. 영상 모델이 만드는 소리는 끕니다.
@@ -190,7 +190,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 | `STT_ENGINE` | `local` | 음성 인식 엔진. 현재는 `local`(로컬 Whisper)만 구현되어 있음 |
 | `WHISPER_MODEL` | `small` | `tiny` / `base` / `small` / `medium` / `large-v3` (클수록 정확하지만 느림) |
 | `HIGGSFIELD_API_KEY` | (비어 있음) | 힉스필드 키 (`키ID:시크릿`) — 이미지·영상 |
-| `HIGGSFIELD_IMAGE_MODEL` / `HIGGSFIELD_VIDEO_MODEL` | Grok Image 2.0 / Wan 2.7 | 이미지 모델 / 영상 기본 모델 |
+| `HIGGSFIELD_IMAGE_MODEL` / `HIGGSFIELD_VIDEO_MODEL` | GPT Image 2.5 Flare / Kling 2.5 Turbo Pro | 이미지 모델 / 영상 기본 모델 |
 | `TYPECAST_API_KEY` / `TYPECAST_MODEL` | (비어 있음) / `ssfm-v31` | 타입캐스트 키 / 모델 — 음성 |
 | `VISUAL_ENGINE` / `SOUND_ENGINE` | (자동) | 키가 있으면 항상 힉스필드·타입캐스트 (예전 `mock`·`system` 값은 무시·자동 정리). 테스트용 임시 엔진은 `FORCE_MOCK_ENGINES=1` |
 | `FLOW_*` | (비어 있음) | Flow 메신저 연동 설정 (연동 예정) |

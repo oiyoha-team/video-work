@@ -788,10 +788,16 @@ a.btn { text-decoration: none; color: var(--text); }
   border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft);
 }
 .regen-form textarea, .selection-bar textarea { width: 100%; font-size: 13px; }
-.compare { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 2px solid var(--accent); border-radius: 8px; }
-.compare-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.compare-item { display: flex; flex-direction: column; gap: 4px; }
-.compare-item .media-box { max-height: 150px; }
+/* 장면 줄 아래 전체 폭 패널 (비교 · 수정 지시) */
+.prod-row > .row-panel { grid-column: 1 / -1; }
+.regen-btn.on { border-color: var(--accent); background: var(--accent-soft); }
+.compare-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 2px solid var(--accent); border-radius: 10px; background: var(--surface); }
+.compare-pair { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px; }
+.compare-item { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
+.compare-item .media-box { height: min(420px, 55vh); width: auto; max-width: 100%; max-height: none; }
+.compare-item.new .media-box { outline: 2px solid var(--accent); }
+.compare-note { max-width: 320px; text-align: center; }
+.media-box.comparing { outline: 2px dashed var(--accent); }
 .compare-tag {
   position: absolute; top: 4px; left: 4px; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
   background: rgba(0, 0, 0, 0.6); color: #fff;
@@ -817,3 +823,4 @@ a.btn { text-decoration: none; color: var(--text); }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: grid; place-items: center; z-index: 50; padding: 16px; }
 .modal { max-width: 480px; width: 100%; display: flex; flex-direction: column; gap: 10px; }
 .tip-steps { margin: 6px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.prod-row > .row-panel .regen-form { max-width: 760px; }

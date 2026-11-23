@@ -55,6 +55,9 @@ class VisualTrack(BaseModel):
     world: str = ""  # 새로 정한 배경·공간 (레퍼런스와 다른 장소, 영어)
     concept_note: str = ""  # 레퍼런스에서 가져온 것 / 새로 만든 것 요약 (화면 표시용, 한국어)
     anchor_scene: str = ""  # 기준 장면 (첫 장면). 나머지 장면은 이 이미지의 그림체·인물·세계관을 따른다
+    # 레퍼런스 장면 구도 반영 정도: low(역할·샷 크기만) | medium(샷 크기·앵글·구도·동작) | high(+배경 구성 종류까지)
+    # 그림체·인물·색감은 어느 단계든 레퍼런스를 복사하지 않는다
+    ref_follow: str = "medium"
     character: str = ""  # 새 인물 설정 (영어)
     cast_image: str | None = None  # 인물 기준 이미지 (첫 장면에 인물이 있으면 그 장면, 없으면 첫 장면 그림체로 만든 인물)
     cast_v: int = 0

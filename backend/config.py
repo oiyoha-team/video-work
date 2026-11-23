@@ -35,7 +35,9 @@ HIGGSFIELD_API_KEY = os.getenv("HIGGSFIELD_API_KEY", "").strip()  # "키ID:시�
 from version import APP_VERSION  # noqa: E402,F401 — 화면 상단에 표시 (버전은 version.py에서 올린다)
 
 HIGGSFIELD_IMAGE_MODEL = os.getenv("HIGGSFIELD_IMAGE_MODEL", "marketing-studio/image/flare").strip()
-HIGGSFIELD_VIDEO_MODEL = os.getenv("HIGGSFIELD_VIDEO_MODEL", "wan/v2.7/image-to-video").strip()  # 기획안별로 화면에서 변경 가능
+HIGGSFIELD_VIDEO_MODEL = os.getenv("HIGGSFIELD_VIDEO_MODEL", "kling-video/v2.5-turbo/pro/image-to-video").strip()  # 기획안별로 화면에서 변경 가능
+# 5단계 모델 목록에서 '추천' 표시를 붙일 모델 (힉스필드 모델 ID)
+RECOMMENDED_MODELS = {"marketing-studio/image/flare", "kling-video/v2.5-turbo/pro/image-to-video"}
 TYPECAST_API_KEY = os.getenv("TYPECAST_API_KEY", "").strip()
 TYPECAST_MODEL = os.getenv("TYPECAST_MODEL", "ssfm-v31").strip()
 

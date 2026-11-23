@@ -139,6 +139,7 @@ export interface ExportList {
 export interface ImageModel {
   id: string;
   label: string;
+  recommended?: boolean; // 목록에 '추천' 표시
   usd: number | null; // 한 장 가격 (모르면 null)
   max_images: number; // 참고 이미지 최대 장수
 }
@@ -146,6 +147,7 @@ export interface ImageModel {
 export interface VideoModel {
   id: string;
   label: string;
+  recommended?: boolean; // 목록에 '추천' 표시
   usd_per_sec: number | null;
   resolution: string | null;
   min_sec: number;
@@ -192,6 +194,7 @@ export interface Production {
     world: string; // 새 배경·공간 (영어)
     concept_note: string; // 레퍼런스에서 가져온 것 / 새로 만든 것 (한국어)
     anchor_scene: string; // 기준 장면 (첫 장면)
+    ref_follow: "low" | "medium" | "high"; // 레퍼런스 장면 구도 반영 정도
     character: string; // 새 인물 설정 (레퍼런스 인물과 얼굴·헤어·의상이 다름)
     cast_image: string | null; // 인물 기준 이미지
     cast_v: number;
