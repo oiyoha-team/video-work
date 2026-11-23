@@ -11,6 +11,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import media
+import premiere_xml
 from planning import script_writer, store
 from planning.labels import role_label
 from planning.text import split_sentences
@@ -31,17 +33,22 @@ GUIDE = """[퍼포먼스 영상 · 편집용 결과물] 프로젝트: {name}
 영상클립/  장면 순서대로 번호가 붙은 클립 ({p}_scene01.mp4, {p}_scene02.mp4 ...)
 음성/      문장별 대사 음성 ({p}_scene01_1.wav, {p}_scene01_2.wav ...) — 장면 번호_문장 번호, 대사가 없는 장면은 파일이 없습니다
 이미지/    영상 클립의 원본 장면 이미지
-{p}_timeline.csv   문장 한 줄씩: 편집 시작 시간, 대사, 파일 이름 (엑셀에서 열림)
+영상클립/정지화면/  음성이 클립보다 길어 늘어난 장면을 채우는 클립 마지막 화면
+{p}_premiere.xml   ★ 프리미어 타임라인 — 가져오면 영상·음성이 제 위치에 깔린 시퀀스가 열립니다
 {p}_subtitles_premiere.srt  ★ 프리미어용 자막 — 실제 음성 길이에 맞춘 시간 · 화면 비율에 맞춘 두 줄 나눔
+{p}_timeline.csv   참고용 표: 장면·문장별 시간, 대사, 파일 이름 (엑셀에서 열림. 이 파일을 고쳐도 프리미어에는 반영되지 않습니다)
 {p}_subtitles.srt  레퍼런스 장면 시간에 맞춘 자막 (음성을 장면 길이에 맞춰 줄여 쓸 때만 사용)
 {p}_script.txt     확정된 대사 스크립트 (한 줄 = 한 문장)
 
-프리미어 편집 순서 ({p}_subtitles_premiere.srt 기준)
-1. 파일 > 가져오기로 영상클립·음성 폴더와 {p}_subtitles_premiere.srt를 불러옵니다.
-2. timeline.csv의 '편집 장면 시작'에 영상클립을, '편집 음성 시작'에 음성을 놓습니다.
-   음성이 클립보다 긴 장면은 '편집 장면 끝'까지 클립을 늘리거나 정지 화면으로 채웁니다.
-3. 프로젝트 패널의 자막 파일을 타임라인 맨 앞(0초)에 끌어다 놓으면
-   캡션 트랙이 생기고 음성과 시간이 맞습니다. 글꼴·크기·위치는 '텍스트' 패널에서 한 번에 바꿉니다.
+프리미어 편집 순서
+1. ZIP을 푼 폴더 구조를 그대로 둔 채, 프리미어에서 [파일 > 가져오기]로 {p}_premiere.xml 을 엽니다.
+   → 프로젝트 패널에 시퀀스가 생깁니다. 더블클릭하면 영상(V1)과 음성(A1)이 이미 제 시간에 놓여 있습니다.
+   음성이 클립보다 긴 장면은 클립 마지막 화면(정지 화면)이 이어 붙어 있고,
+   영상 없이 이미지만 만든 장면은 이미지가 장면 길이만큼 놓여 있습니다.
+   ※ [미디어 연결] 창이 뜨면: [찾기]를 눌러 표시된 파일 하나만 골라 주세요. 나머지는 자동으로 연결됩니다.
+2. {p}_subtitles_premiere.srt 를 가져온 뒤, 타임라인 맨 앞(0초)에 끌어다 놓습니다.
+   → 캡션 트랙이 생기고 음성과 시간이 맞습니다. 글꼴·크기·위치는 [창 > 텍스트]의 캡션 탭에서
+     자막을 모두 선택(Ctrl+A)한 뒤 한 번에 바꿉니다.
 """
 
 
@@ -253,7 +260,45 @@ def _write_docs(project_id: str, script: Script, prefix: str) -> Path:
             ])
     # 엑셀에서 한글이 깨지지 않도록 BOM 포함
     (out / "timeline.csv").write_text(buf.getvalue(), encoding="utf-8-sig")
-    return out
+
+    plan = premiere_plan(project_id, script, prod, prefix, timeline)
+    (out / "premiere.xml").write_text(premiere_xml.build(plan, f"{prefix}_편집"), encoding="utf-8")
+    return plan
+
+
+HOLD_DIR = "export/holds"
+
+
+def premiere_plan(project_id: str, script: Script, prod, prefix: str, timeline: list[dict]) -> premiere_xml.Plan:
+    """프리미어 타임라인 배치. 경로는 ZIP 안 경로(= XML 기준 상대 경로)와 같다."""
+    pdir = store.project_dir(project_id)
+    width, height = media.RESOLUTIONS.get(script.meta.aspect_ratio, (1080, 1920))
+    plan = premiere_xml.Plan(width=width, height=height)
+    f = premiere_xml.frames
+    for i, (s, tl) in enumerate(zip(script.scenes, timeline)):
+        name = _scene_name(i)
+        va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
+        a, b = f(tl["start"]), f(tl["end"])
+        if va and va.video and (pdir / va.video).exists():
+            src = pdir / va.video
+            total = f(premiere_xml.video_seconds(src)) or (b - a)
+            use = min(total, b - a)
+            plan.video.append(premiere_xml.Piece(f"영상클립/{prefix}_{name}.mp4", src, a, a + use, file_frames=total))
+            if b - a - use >= 1:  # 음성이 길어 장면이 늘어난 만큼 마지막 화면으로 채운다
+                hold = pdir / HOLD_DIR / f"{Path(va.video).stem}_hold.png"
+                premiere_xml.last_frame(src, hold)
+                plan.video.append(premiere_xml.Piece(f"영상클립/정지화면/{prefix}_{name}_정지.png", hold, a + use, b, kind="still"))
+        elif va and va.image and (pdir / va.image).exists():  # 영상 없이 이미지만 만든 장면
+            plan.video.append(premiere_xml.Piece(f"이미지/{prefix}_{name}{Path(va.image).suffix}", pdir / va.image, a, b, kind="still"))
+        for n, (line, cue) in enumerate(zip(sa.lines if sa else [], tl["lines"]), 1):
+            if not (cue[3] and line.audio and (pdir / line.audio).exists()):
+                continue
+            src = pdir / line.audio
+            rate, channels = premiere_xml.wav_info(src)
+            length = max(1, f(line.duration))
+            plan.audio.append(premiere_xml.Piece(f"음성/{prefix}_{name}_{n}.wav", src, f(cue[0]), f(cue[0]) + length,
+                                                 file_frames=length, kind="audio", rate=rate, channels=channels))
+    return plan
 
 
 def list_items(project_id: str) -> list[dict]:
@@ -264,11 +309,11 @@ def list_items(project_id: str) -> list[dict]:
     prod = store.get_production(project_id)
     pdir = store.project_dir(project_id)
     prefix = file_prefix(store.get_project(project_id).name)
-    _write_docs(project_id, script, prefix)
+    plan = _write_docs(project_id, script, prefix)
 
     items: list[dict] = []
 
-    def add(key: str, group: str, label: str, rel: str | None, filename: str, scene: int | None = None):
+    def add(key: str, group: str, label: str, rel: str | None, filename: str, scene: int | None = None, full_name: str = ""):
         if not rel or not (pdir / rel).exists():
             return
         folder = FOLDERS[group]
@@ -277,10 +322,17 @@ def list_items(project_id: str) -> list[dict]:
             "group": group,
             "label": label,
             "path": rel,
-            "filename": f"{folder}/{prefix}_{filename}" if folder else f"{prefix}_{filename}",
+            "filename": full_name or (f"{folder}/{prefix}_{filename}" if folder else f"{prefix}_{filename}"),
             "size": (pdir / rel).stat().st_size,
             "scene": scene,
         })
+
+    # 정지 화면 (프리미어 타임라인에서 늘어난 장면을 채움)
+    for piece in plan.video:
+        if piece.zip_path.startswith("영상클립/정지화면/"):
+            n = int(re.search(r"scene(\d+)", piece.zip_path).group(1))
+            add(f"hold:{n}", "images", f"#{n:02d} 정지 화면 (음성이 길어 늘어난 부분)", piece.src.relative_to(pdir).as_posix(), "",
+                n, full_name=piece.zip_path)
 
     for i, s in enumerate(script.scenes):
         va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
@@ -290,11 +342,15 @@ def list_items(project_id: str) -> list[dict]:
             add(f"audio:{s.id}:{n}", "audio", f"#{i + 1:02d}-{n} {line.text}", line.audio, f"{name}_{n}.wav", i + 1)
         add(f"image:{s.id}", "images", label, va.image if va else None, f"{name}{Path(va.image).suffix if va and va.image else '.jpg'}", i + 1)
 
-    for key, label in [("timeline.csv", "타임라인 (장면별 시간·파일 정리)"),
+    for key, label in [("premiere.xml", "★ 프리미어 타임라인 — 가져오면 영상·음성 자동 배치"),
+                       ("timeline.csv", "타임라인 표 (참고용 · 장면별 시간·파일 정리)"),
                        ("subtitles_premiere.srt", "자막 — 프리미어용 (음성 길이에 맞춤)"),
                        ("subtitles.srt", "자막 — 레퍼런스 장면 시간 기준"),
                        ("script.txt", "기획안 (텍스트)"), ("script.json", "기획안 (JSON)"), ("README.txt", "편집 안내")]:
         add(f"doc:{key}", "docs", label, f"export/{key}", key)
+    for it in items:
+        if it["key"] == "doc:premiere.xml":
+            it["needs"] = [p.zip_path for p in plan.video + plan.audio]  # 이 XML이 쓰는 파일
     return items
 
 
@@ -303,7 +359,9 @@ def build_zip(project_id: str, keys: list[str] | None) -> Path:
     items = list_items(project_id)
     if keys:
         wanted = set(keys)
-        items = [it for it in items if it["key"] in wanted]
+        # 프리미어 타임라인을 고르면 그 타임라인이 쓰는 영상·음성·정지 화면도 함께 넣는다
+        needs = {f for it in items if it["key"] in wanted for f in it.get("needs", [])}
+        items = [it for it in items if it["key"] in wanted or it["filename"] in needs]
     if not items:
         raise ValueError("내려받을 파일이 없습니다.")
     pdir = store.project_dir(project_id)

@@ -69,8 +69,20 @@ export default function Step6Download({ project }: Props) {
       </section>
 
       <div className="alert ok tip">
-        <b>timeline.csv</b>에 장면 순서, 시작·끝 시간, 대사, 파일 이름이 정리되어 있습니다. ZIP 안의 파일은 <code>scene01</code>, <code>scene02</code> … 처럼
-        장면 순서대로 이름이 붙어 있어 편집 툴 타임라인에 그대로 배치하면 됩니다.
+        <b>프리미어에서 바로 편집하기</b>
+        <ol className="tip-steps">
+          <li>
+            <b>전체 ZIP</b>을 받아 압축을 풉니다 (폴더 구조는 그대로 두세요).
+          </li>
+          <li>
+            프리미어 <b>[파일 &gt; 가져오기]</b>로 <code>…_premiere.xml</code>을 엽니다 → 생긴 시퀀스를 더블클릭하면 영상·음성이 이미 제 시간에 깔려
+            있습니다. <span className="muted">[미디어 연결] 창이 뜨면 [찾기]로 파일 하나만 골라 주면 나머지는 자동으로 연결됩니다.</span>
+          </li>
+          <li>
+            <code>…_subtitles_premiere.srt</code>를 가져와 타임라인 맨 앞(0초)에 끌어다 놓으면 자막이 음성과 맞게 깔립니다.
+          </li>
+        </ol>
+        <span className="muted small">timeline.csv는 장면별 시간·파일 이름을 정리한 참고용 표입니다 (고쳐도 프리미어에는 반영되지 않습니다).</span>
       </div>
 
       <div className="export-grid">
