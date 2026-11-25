@@ -64,5 +64,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").strip().
 
 # 레퍼런스 분석 규칙
 MAX_VIDEO_SEC = 180
-SEGMENT_SEC = 2.0
+SEGMENT_SEC = 1.0  # 레퍼런스 분석 구간 길이 (초)
+MAX_CUT_SEC = 0  # 한 컷의 최대 길이 (0 = 제한 없음: 화면이 실제로 바뀔 때만 컷을 나눈다 — 같은 장면 중복 생성 방지)
+CUT_SCENE_THRESHOLD = 0.30  # ffmpeg 화면 전환 감지 민감도 (낮을수록 많이 감지)
 ASPECT_RATIOS = ["1:1", "4:5", "16:9", "9:16"]

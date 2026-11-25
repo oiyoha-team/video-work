@@ -29,6 +29,7 @@ from sound import engine as sound_engine
 from sound import pipeline as sound_pipeline
 from sound import typecast
 from visual import catalog as visual_catalog
+from visual import cuts as visual_cuts
 from visual import engine as visual_engine
 from visual import pipeline as visual_pipeline
 
@@ -492,6 +493,8 @@ def start_production(pid: str):
 
 @app.get("/api/projects/{pid}/production")
 def get_production(pid: str):
+    if store.get_script(pid):
+        visual_cuts.ensure(pid)  # 장면마다 컷 계획(레퍼런스 화면 전환 기준)이 있게 한다
     data = store.get_production(pid).model_dump()
     data["visual"]["image_model"] = visual_pipeline.image_model(pid)
     data["visual"]["video_model"] = visual_pipeline.video_model(pid)
@@ -509,18 +512,28 @@ def production_estimate(pid: str):
     script = store.get_script(pid)
     if script is None:
         raise ValueError("스크립트가 없습니다.")
+    visual_cuts.ensure(pid)
+    cuts = store.get_production(pid).visual.scenes
+    cut_ids = visual_cuts.owners(pid, script)  # 이어 쓰는 컷은 새로 만들지 않아 비용 없음
     real = visual_engine.get_engine().name == "higgsfield"
     if not real:
-        return {"scenes": len(script.scenes), "video_seconds": 0, "video_model": "mock", "image_model": "mock", "images_usd": 0, "videos_usd": 0,
-                "total_usd": 0, "billable": False, "priced": True, "image_usd_each": 0, "scene_video_usd": {s.id: 0 for s in script.scenes}}
+        return {"scenes": len(cut_ids), "video_seconds": 0, "video_model": "mock", "image_model": "mock", "images_usd": 0, "videos_usd": 0,
+                "total_usd": 0, "billable": False, "priced": True, "image_usd_each": 0, "scene_video_usd": {c: 0 for c in cut_ids}}
     ispec = visual_catalog.spec("image", visual_pipeline.image_model(pid)) or {}
     vspec = visual_catalog.spec("video", visual_pipeline.video_model(pid)) or {}
-    secs = {s.id: visual_catalog.clip_seconds(vspec, s.end - s.start) if vspec else 0 for s in script.scenes}
+    scene_len = {s.id: s.end - s.start for s in script.scenes}
+
+    def cut_len(cid: str) -> float:
+        c = cuts.get(cid)
+        return visual_cuts.shot_len(pid, cid, script) if c and c.end > c.start else scene_len.get(cid, 2.0)
+
+    # 컷 하나당 영상 길이 (모델 최소 길이보다 짧은 컷도 최소 길이로 만들어져 그만큼 청구된다)
+    secs = {c: visual_catalog.clip_seconds(vspec, cut_len(c)) if vspec else 0 for c in cut_ids}
     img_usd, per_sec = ispec.get("usd"), vspec.get("usd_per_sec")
     per_scene = {sid: round(sec * (per_sec or 0), 3) for sid, sec in secs.items()}
-    images = round(len(script.scenes) * (img_usd or 0), 2)
+    images = round(len(cut_ids) * (img_usd or 0), 2)
     videos = round(sum(per_scene.values()), 2)
-    return {"scenes": len(script.scenes), "video_seconds": sum(secs.values()), "video_model": vspec.get("label", "-"),
+    return {"scenes": len(cut_ids), "video_seconds": sum(secs.values()), "video_model": vspec.get("label", "-"),
             "image_model": ispec.get("label", "-"), "images_usd": images, "videos_usd": videos, "total_usd": round(images + videos, 2),
             "billable": True, "priced": img_usd is not None and per_sec is not None,
             "image_usd_each": img_usd or 0, "scene_video_usd": per_scene}
@@ -663,6 +676,38 @@ def generate_videos(pid: str, body: SceneIdsBody | None = None):
     return {"ok": True}
 
 
+class AddCutBody(BaseModel):
+    after: str | None = None  # 이 컷 뒤에 추가 (없으면 장면 맨 앞)
+    note: str = ""  # 새 컷 내용 (한국어, 선택)
+
+
+@app.post("/api/projects/{pid}/visual/scenes/{scene_id}/cuts")
+def add_cut(pid: str, scene_id: str, body: AddCutBody):
+    """장면 안에 컷을 추가한다 (옆 컷 시간을 반으로 나눠 줌). 이미지는 [이미지 만들기]로 따로 만든다."""
+    if store.get_project(pid).visual_job.status == "running":
+        raise HTTPException(409, "비주얼 작업이 끝난 뒤 컷을 추가할 수 있습니다.")
+    visual_cuts.add(pid, scene_id, body.after, body.note)
+    return get_production(pid)
+
+
+@app.post("/api/projects/{pid}/visual/cuts/{cut_id}/unlink")
+def unlink_cut(pid: str, cut_id: str):
+    """앞 장면 컷을 이어 쓰던 컷을 따로 만드는 컷으로 바꾼다 (이후 [이미지 만들기])."""
+    if store.get_project(pid).visual_job.status == "running":
+        raise HTTPException(409, "비주얼 작업이 끝난 뒤 바꿀 수 있습니다.")
+    visual_cuts.unlink(pid, cut_id)
+    return get_production(pid)
+
+
+@app.delete("/api/projects/{pid}/visual/cuts/{cut_id}")
+def delete_cut(pid: str, cut_id: str):
+    """컷을 지운다 (그 시간은 옆 컷에 붙는다)."""
+    if store.get_project(pid).visual_job.status == "running":
+        raise HTTPException(409, "비주얼 작업이 끝난 뒤 컷을 지울 수 있습니다.")
+    visual_cuts.delete(pid, cut_id)
+    return get_production(pid)
+
+
 class ChooseBody(BaseModel):
     keep: str  # new | prev
 
@@ -685,6 +730,12 @@ class ResetBody(BaseModel):
 def reset_production(pid: str, body: ResetBody):
     """5단계 초기화 (만든 이미지·영상·음성을 지움, 고른 모델·목소리는 유지)."""
     return workflow.reset_production(pid, body.what)
+
+
+@app.post("/api/projects/{pid}/steps/{step}/reset")
+def reset_step(pid: str, step: int):
+    """1·2·3단계 초기화 (그 단계와 그 결과에 기대는 뒤 단계 결과를 지우고 그 단계부터 다시)."""
+    return workflow.reset_step(pid, step)
 
 
 class ResetProjectBody(BaseModel):

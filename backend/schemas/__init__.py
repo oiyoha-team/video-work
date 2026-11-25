@@ -7,5 +7,5 @@ from .gate import GATE_STEP, Gate, GateKind
 from .product import Product, ProductImage, ProductImages
 from .production import Production, SoundAsset, SoundLine, SoundTrack, TTSSettings, VisualAsset, VisualTrack, VisualVersion
 from .project import JobState, Project
-from .reference import Overall, Persona, ReferenceAnalysis, SceneDetail, Segment, SourceInfo, StructurePart, Tone
+from .reference import Overall, Persona, RefCut, ReferenceAnalysis, SceneDetail, Segment, SourceInfo, StructurePart, Tone
 from .script import AspectRatio, Scene, Script, ScriptMeta, Voice

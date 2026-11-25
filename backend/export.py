@@ -30,7 +30,7 @@ GUIDE = """[퍼포먼스 영상 · 편집용 결과물] 프로젝트: {name}
 
 모든 파일 이름은 프로젝트명({p})으로 시작합니다. 다른 프로젝트 결과물과 한 폴더에 모아도 섞이지 않습니다.
 
-영상클립/  장면 순서대로 번호가 붙은 클립 ({p}_scene01.mp4, {p}_scene02.mp4 ...)
+영상클립/  장면 순서대로 번호가 붙은 클립 ({p}_scene01.mp4 … 장면에 컷이 여러 개면 {p}_scene01-1.mp4, {p}_scene01-2.mp4 …)
 음성/      문장별 대사 음성 ({p}_scene01_1.wav, {p}_scene01_2.wav ...) — 장면 번호_문장 번호, 대사가 없는 장면은 파일이 없습니다
 이미지/    영상 클립의 원본 장면 이미지
 영상클립/정지화면/  음성이 클립보다 길어 늘어난 장면을 채우는 클립 마지막 화면
@@ -220,6 +220,20 @@ def _scene_name(i: int) -> str:
     return f"scene{i + 1:02d}"
 
 
+def scene_cuts(prod, scene, i: int) -> list[tuple[str, object, str]]:
+    """장면의 컷 [(컷 id, 컷, 파일 이름)]. 컷이 하나면 scene01, 여러 개면 scene01-1, scene01-2 …"""
+    from visual.cuts import scene_cut_ids  # 순환 import 방지
+
+    ids = scene_cut_ids(prod, scene.id)
+    name = _scene_name(i)
+    out = []
+    for k, cid in enumerate(ids, 1):
+        c = prod.visual.scenes.get(cid)
+        if c is not None:
+            out.append((cid, c, name if len(ids) == 1 else f"{name}-{k}"))
+    return out
+
+
 def _write_docs(project_id: str, script: Script, prefix: str) -> Path:
     """편집용 자료를 export/ 폴더에 (다시) 만든다. 안에 적는 파일 이름은 내려받을 때의 이름(프로젝트명 포함)과 같다."""
     prod = store.get_production(project_id)
@@ -243,9 +257,10 @@ def _write_docs(project_id: str, script: Script, prefix: str) -> Path:
         "영상 파일", "음성 파일", "음성 길이(초)", "클립 길이(초)", "레퍼런스 시작(초)", "레퍼런스 끝(초)",
     ])
     for i, (s, tl) in enumerate(zip(script.scenes, timeline)):
-        va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
+        sa = prod.sound.scenes.get(s.id)
         name = _scene_name(i)
-        clip = f"영상클립/{prefix}_{name}.mp4" if va and va.video else ""
+        clip = " / ".join(f"영상클립/{prefix}_{cn}.mp4" if c.video else "(앞 장면 클립 이어짐)"
+                          for _, c, cn in scene_cuts(prod, s, i) if c.video or c.link_prev)
         sentences = split_sentences(s.dialogue) or [""]
         sound_lines = sa.lines if sa else []
         for n, sentence in enumerate(sentences, 1):
@@ -275,21 +290,37 @@ def premiere_plan(project_id: str, script: Script, prod, prefix: str, timeline: 
     width, height = media.RESOLUTIONS.get(script.meta.aspect_ratio, (1080, 1920))
     plan = premiere_xml.Plan(width=width, height=height)
     f = premiere_xml.frames
+    # 앞 장면 컷을 이어 쓰는 컷은 대표 컷의 클립을 이어서(같은 파일의 다음 구간) 놓는다
+    shot: dict = {}  # {"va": 대표 컷, "cn": 파일 이름, "used": 이미 쓴 프레임}
     for i, (s, tl) in enumerate(zip(script.scenes, timeline)):
         name = _scene_name(i)
-        va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
+        sa = prod.sound.scenes.get(s.id)
         a, b = f(tl["start"]), f(tl["end"])
-        if va and va.video and (pdir / va.video).exists():
-            src = pdir / va.video
-            total = f(premiere_xml.video_seconds(src)) or (b - a)
-            use = min(total, b - a)
-            plan.video.append(premiere_xml.Piece(f"영상클립/{prefix}_{name}.mp4", src, a, a + use, file_frames=total))
-            if b - a - use >= 1:  # 음성이 길어 장면이 늘어난 만큼 마지막 화면으로 채운다
-                hold = pdir / HOLD_DIR / f"{Path(va.video).stem}_hold.png"
-                premiere_xml.last_frame(src, hold)
-                plan.video.append(premiere_xml.Piece(f"영상클립/정지화면/{prefix}_{name}_정지.png", hold, a + use, b, kind="still"))
-        elif va and va.image and (pdir / va.image).exists():  # 영상 없이 이미지만 만든 장면
-            plan.video.append(premiere_xml.Piece(f"이미지/{prefix}_{name}{Path(va.image).suffix}", pdir / va.image, a, b, kind="still"))
+        cuts = scene_cuts(prod, s, i)
+        for k, (_cid, va, cn) in enumerate(cuts):
+            # 컷 위치는 장면 시작 기준. 마지막 컷은 장면 끝까지 (음성이 길어 늘어난 부분 포함)
+            ca = a if k == 0 else min(b, a + f(va.start))
+            cb = b if k == len(cuts) - 1 else min(b, a + f(va.end))
+            if cb - ca < 1:
+                continue
+            used = 0
+            if va.link_prev and shot:  # 같은 샷이 이어짐 → 대표 컷 파일을 이어서
+                va, cn, used = shot["va"], shot["cn"], shot["used"]
+            else:
+                shot = {"va": va, "cn": cn, "used": 0}
+            if va.video and (pdir / va.video).exists():
+                src = pdir / va.video
+                total = f(premiere_xml.video_seconds(src)) or (used + cb - ca)
+                use = max(0, min(total - used, cb - ca))
+                if use >= 1:
+                    plan.video.append(premiere_xml.Piece(f"영상클립/{prefix}_{cn}.mp4", src, ca, ca + use, src_in=used, file_frames=total))
+                if cb - ca - use >= 1:  # 클립이 컷보다 짧은 만큼 마지막 화면으로 채운다
+                    hold = pdir / HOLD_DIR / f"{Path(va.video).stem}_hold.png"
+                    premiere_xml.last_frame(src, hold)
+                    plan.video.append(premiere_xml.Piece(f"영상클립/정지화면/{prefix}_{cn}_정지.png", hold, ca + use, cb, kind="still"))
+            elif va.image and (pdir / va.image).exists():  # 영상 없이 이미지만 만든 컷
+                plan.video.append(premiere_xml.Piece(f"이미지/{prefix}_{cn}{Path(va.image).suffix}", pdir / va.image, ca, cb, kind="still"))
+            shot["used"] = used + (cb - ca)
         for n, (line, cue) in enumerate(zip(sa.lines if sa else [], tl["lines"]), 1):
             if not (cue[3] and line.audio and (pdir / line.audio).exists()):
                 continue
@@ -330,17 +361,23 @@ def list_items(project_id: str) -> list[dict]:
     # 정지 화면 (프리미어 타임라인에서 늘어난 장면을 채움)
     for piece in plan.video:
         if piece.zip_path.startswith("영상클립/정지화면/"):
-            n = int(re.search(r"scene(\d+)", piece.zip_path).group(1))
-            add(f"hold:{n}", "images", f"#{n:02d} 정지 화면 (음성이 길어 늘어난 부분)", piece.src.relative_to(pdir).as_posix(), "",
+            m = re.search(r"scene(\d+(?:-\d+)?)", piece.zip_path)
+            n = int(m.group(1).split("-")[0])
+            add(f"hold:{m.group(1)}", "images", f"#{m.group(1)} 정지 화면 (클립보다 길어진 부분)", piece.src.relative_to(pdir).as_posix(), "",
                 n, full_name=piece.zip_path)
 
     for i, s in enumerate(script.scenes):
-        va, sa = prod.visual.scenes.get(s.id), prod.sound.scenes.get(s.id)
-        name, label = _scene_name(i), f"#{i + 1:02d} {role_label(s.role) if s.role else ''}".strip()
-        add(f"clip:{s.id}", "clips", label, va.video if va else None, f"{name}.mp4", i + 1)
+        sa = prod.sound.scenes.get(s.id)
+        name, role = _scene_name(i), role_label(s.role) if s.role else ""
+        cuts = scene_cuts(prod, s, i)
+        for k, (cid, va, cn) in enumerate(cuts, 1):
+            label = f"#{i + 1:02d}{f' 컷{k}' if len(cuts) > 1 else ''} {role}".strip()
+            add(f"clip:{cid}", "clips", label, va.video, f"{cn}.mp4", i + 1)
         for n, line in enumerate(sa.lines if sa else [], 1):
             add(f"audio:{s.id}:{n}", "audio", f"#{i + 1:02d}-{n} {line.text}", line.audio, f"{name}_{n}.wav", i + 1)
-        add(f"image:{s.id}", "images", label, va.image if va else None, f"{name}{Path(va.image).suffix if va and va.image else '.jpg'}", i + 1)
+        for k, (cid, va, cn) in enumerate(cuts, 1):
+            label = f"#{i + 1:02d}{f' 컷{k}' if len(cuts) > 1 else ''} {role}".strip()
+            add(f"image:{cid}", "images", label, va.image, f"{cn}{Path(va.image).suffix if va.image else '.jpg'}", i + 1)
 
     for key, label in [("premiere.xml", "★ 프리미어 타임라인 — 가져오면 영상·음성 자동 배치"),
                        ("timeline.csv", "타임라인 표 (참고용 · 장면별 시간·파일 정리)"),

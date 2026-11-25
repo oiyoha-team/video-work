@@ -126,9 +126,14 @@ export const api = {
     request("POST", `${P(pid)}/visual/videos`, { scene_ids: scene_ids ?? null, instruction }),
   approveAllImages: (pid: string) => request("POST", `${P(pid)}/visual/approve`),
   regenerateCast: (pid: string) => request("POST", `${P(pid)}/visual/cast`),
+  addCut: (pid: string, sceneId: string, after: string | null, note: string) =>
+    request<Production>("POST", `${P(pid)}/visual/scenes/${sceneId}/cuts`, { after, note }),
+  unlinkCut: (pid: string, cutId: string) => request<Production>("POST", `${P(pid)}/visual/cuts/${cutId}/unlink`),
+  deleteCut: (pid: string, cutId: string) => request<Production>("DELETE", `${P(pid)}/visual/cuts/${cutId}`),
   chooseVersion: (pid: string, sceneId: string, keep: "new" | "prev") =>
     request<Production>("POST", `${P(pid)}/visual/scenes/${sceneId}/choose`, { keep }),
   resetProduction: (pid: string, what: "visual" | "sound" | "all") => request<Project>("POST", `${P(pid)}/production/reset`, { what }),
+  resetStep: (pid: string, step: 1 | 2 | 3) => request<Project>("POST", `${P(pid)}/steps/${step}/reset`),
   resetProject: (pid: string, keep_product: boolean) => request<Project>("POST", `${P(pid)}/reset`, { keep_product }),
   generateSound: (pid: string, scene_ids?: string[]) => request("POST", `${P(pid)}/sound/generate`, { scene_ids: scene_ids ?? null }),
   regenerateLine: (pid: string, sceneId: string, n: number) =>

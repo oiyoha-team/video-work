@@ -16,6 +16,7 @@ from llm import claude_client
 from planning import analyze, chat_agent, script_writer, store
 from schemas import JobState, Product, Project
 from sound import pipeline as sound_pipeline
+from visual import cuts as visual_cuts
 from visual import pipeline as visual_pipeline
 
 
@@ -145,7 +146,7 @@ def approve_images_and_animate(project_id: str) -> None:
     """[이미지 전체 승인]: 모든 이미지를 승인하고, 아직 영상이 없는 장면을 영상화한다 (화면·알림 센터·Flow 공통)."""
     st = production_status(project_id)
     if st["images"] < st["total"]:
-        raise ValueError("모든 장면의 이미지가 있어야 전체 승인할 수 있습니다.")
+        raise ValueError("모든 컷의 이미지가 있어야 전체 승인할 수 있습니다.")
     _ensure_idle(store.get_project(project_id), "visual_job", "비주얼 작업")
     visual_pipeline.keep_all_new(project_id)  # 이전/새 결과를 고르지 않은 장면은 새 결과로 확정
     visual_pipeline.set_approval(project_id, None, True)
@@ -162,13 +163,16 @@ def start_sound(project_id: str, scene_ids: list[str] | None = None) -> None:
 
 
 def production_status(project_id: str) -> dict:
+    """total = 컷 수 (이미지·영상 단위), scenes = 장면 수 (음성 단위)."""
     script = store.get_script(project_id)
     prod = store.get_production(project_id)
     ids = [s.id for s in script.scenes] if script else []
-    vs = [prod.visual.scenes.get(i) for i in ids]
+    cut_ids = visual_cuts.owners(project_id, script, prod) if script else []  # 이어 쓰는 컷은 대표 컷 하나로 센다
+    vs = [prod.visual.scenes.get(i) for i in cut_ids]
     ss = [prod.sound.scenes.get(i) for i in ids]
     st = {
-        "total": len(ids),
+        "total": len(cut_ids),
+        "scenes": len(ids),
         "images": sum(1 for a in vs if a and a.image),
         "images_approved": sum(1 for a in vs if a and a.image and a.image_approved),
         "videos": sum(1 for a in vs if a and a.video),
@@ -177,7 +181,7 @@ def production_status(project_id: str) -> dict:
         "comparing": sum(1 for a in vs if a and a.prev),  # 이전/새 결과를 아직 고르지 않은 장면
     }
     # 영상·음성이 모두 있으면 [전체 승인]으로 다음 단계(결과물 받기)로 넘어갈 수 있다
-    st["ready"] = bool(ids) and st["videos"] == len(ids) and st["audios"] == len(ids)
+    st["ready"] = bool(ids) and st["videos"] == len(cut_ids) and st["audios"] == len(ids)
     return st
 
 
@@ -235,6 +239,45 @@ def reset_project(project_id: str, keep_product: bool = True) -> Project:
         store.save_product(project_id, Product())
     fresh = Project(id=project.id, name=project.name, created_at=project.created_at, updated_at=project.updated_at)
     return store.save_project(fresh)
+
+
+def _remove(project_id: str, *names: str) -> None:
+    pdir = store.project_dir(project_id)
+    for name in names:
+        path = pdir / name
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+
+def reset_step(project_id: str, step: int) -> Project:
+    """단계별 초기화. 그 단계 결과와, 그 결과에 기대는 뒤 단계 결과를 지우고 그 단계부터 다시 시작한다.
+
+    1 레퍼런스 분석: 레퍼런스 영상·분석·스크립트·영상 제작 결과 (제품 정보는 남김)
+    2 제품 정보: 제품 정보·사진만 (스크립트·영상 결과는 남김 — 다시 확정하면 이어서 쓸 수 있음)
+    3 스크립트: 스크립트·대화 기록·영상 제작 결과 (장면이 바뀌므로)
+    """
+    project = store.get_project(project_id)
+    _ensure_no_jobs(project)
+    changes: dict = {"step": min(project.step, step), "completed": False}
+    if step == 1:
+        for kind in ("analysis", "script", "images", "production"):
+            gates.close_kind(project_id, kind)
+        _remove(project_id, "reference", "scene_analysis", "script.json", "script.txt", "chat.json", "production.json",
+                "visual", "sound", "export")
+        changes.update(aspect_ratio=None, analysis_job=JobState(), script_job=JobState(), visual_job=JobState(), sound_job=JobState())
+    elif step == 2:
+        _remove(project_id, "product")
+        store.save_product(project_id, Product())
+    elif step == 3:
+        for kind in ("script", "images", "production"):
+            gates.close_kind(project_id, kind)
+        _remove(project_id, "script.json", "script.txt", "chat.json", "production.json", "visual", "sound", "export")
+        changes.update(script_job=JobState(), visual_job=JobState(), sound_job=JobState())
+    else:
+        raise ValueError("초기화할 수 있는 단계는 1·2·3입니다 (5단계는 영상 제작 화면의 초기화를 쓰세요).")
+    return store.update_project(project_id, **changes)
 
 
 # ── 5 → 6 결과물 다운로드 ─────────────────────────────────────────────

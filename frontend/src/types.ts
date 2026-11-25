@@ -81,7 +81,17 @@ export interface VisualVersion {
 }
 
 export interface VisualAsset {
-  prompt: string; // 장면 이미지 프롬프트 (영어)
+  // 컷 하나 (장면 하나에 컷이 여러 개 있을 수 있음 — Production.visual.scene_cuts)
+  scene_id: string;
+  start: number; // 장면 시작 기준 컷 위치 (초)
+  end: number;
+  ref_frame: string | null;
+  ref_desc: string; // 대응 레퍼런스 컷 묘사
+  split: boolean; // 레퍼런스의 긴 샷을 나눈 컷 (다른 샷으로 변주)
+  note: string; // 직접 추가한 컷의 내용
+  added: boolean;
+  link_prev: boolean; // 앞 장면 컷과 같은 샷이 이어짐 → 이미지·영상을 새로 만들지 않고 이어 씀
+  prompt: string; // 컷 이미지 프롬프트 (영어)
   motion: string;
   video_prompt: string;
   image: string | null;
@@ -195,6 +205,7 @@ export interface Production {
     concept_note: string; // 레퍼런스에서 가져온 것 / 새로 만든 것 (한국어)
     anchor_scene: string; // 기준 장면 (첫 장면)
     ref_follow: "low" | "medium" | "high"; // 레퍼런스 장면 구도 반영 정도
+    scene_cuts: Record<string, string[]>; // 장면별 컷 순서 (없으면 [장면 id] 한 컷)
     character: string; // 새 인물 설정 (레퍼런스 인물과 얼굴·헤어·의상이 다름)
     cast_image: string | null; // 인물 기준 이미지
     cast_v: number;
@@ -203,7 +214,8 @@ export interface Production {
   };
   sound: { engine: string; voice: string; voice_id: string; settings: TTSSettings; scenes: Record<string, SoundAsset> };
   status: {
-    total: number;
+    total: number; // 컷 수 (이미지·영상 단위)
+    scenes: number; // 장면 수 (음성 단위)
     images: number;
     images_approved: number;
     videos: number;
@@ -237,6 +249,16 @@ export interface Segment {
   shot_type: string;
   role: string;
   merged_from: number[];
+  cuts?: RefCut[]; // 구간 안의 컷 (화면 전환 기준, 최대 2초)
+}
+
+export interface RefCut {
+  start: number;
+  end: number;
+  frame: string; // 프로젝트 폴더 기준 경로
+  split: boolean; // 한 샷이 길어 나눈 컷 (MAX_CUT_SEC를 쓸 때만)
+  cont: boolean; // 앞 구간 마지막 컷과 같은 샷이 이어짐
+  description: string;
 }
 
 export interface Overall {

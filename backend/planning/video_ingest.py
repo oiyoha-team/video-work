@@ -1,11 +1,11 @@
-"""ffmpeg 기반 영상 처리: 메타데이터 확인, 2초 구간 프레임 추출, 오디오 분리."""
+"""ffmpeg 기반 영상 처리: 메타데이터 확인, 1초 구간 프레임 추출, 화면 전환(컷) 감지, 오디오 분리."""
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import ASPECT_RATIOS, SEGMENT_SEC
+from config import ASPECT_RATIOS, CUT_SCENE_THRESHOLD, MAX_CUT_SEC, SEGMENT_SEC
 from media import run as _run
 
 
@@ -47,7 +47,7 @@ def closest_aspect_ratio(width: int, height: int) -> str:
 
 
 def segment_bounds(duration: float) -> list[tuple[float, float]]:
-    """2초 단위 구간. 마지막 자투리가 0.5초 미만이면 앞 구간에 붙인다."""
+    """SEGMENT_SEC(1초) 단위 구간. 마지막 자투리가 0.5초 미만이면 앞 구간에 붙인다."""
     bounds = []
     t = 0.0
     while t < duration - 1e-6:
@@ -85,3 +85,50 @@ def extract_audio(src: Path, out: Path) -> None:
     result = _run(["-y", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", str(out)])
     if result.returncode != 0:
         raise RuntimeError(f"오디오 추출 실패: {result.stderr[-300:]}")
+
+
+# ── 컷(화면 전환) ─────────────────────────────────────────────
+
+MIN_CUT_SEC = 0.4  # 이보다 짧은 컷은 앞뒤 컷에 붙인다 (전환 효과·깜빡임)
+
+
+def detect_cuts(src: Path, threshold: float = CUT_SCENE_THRESHOLD) -> list[float]:
+    """화면이 확 바뀌는 시점(초) 목록. ffmpeg의 장면 변화 점수가 threshold를 넘는 프레임."""
+    result = _run(["-i", str(src), "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-"])
+    times = sorted({round(float(m.group(1)), 2) for m in re.finditer(r"pts_time:(\d+(?:\.\d+)?)", result.stderr)})
+    return [t for t in times if t > 0]
+
+
+def plan_cuts(start: float, end: float, cut_times: list[float], max_len: float = MAX_CUT_SEC) -> list[tuple[float, float, bool]]:
+    """구간 [start, end]를 컷으로 나눈다 → [(시작, 끝, 길이 때문에 나눔)].
+
+    1. 화면 전환 시점에서 나눈다 (너무 짧은 컷은 붙인다).
+    2. max_len이 있으면(0이 아니면) 그보다 긴 컷을 같은 길이로 다시 나눈다. 기본은 나누지 않는다
+       (화면이 바뀌지 않으면 3초든 5초든 한 컷 → 같은 장면을 중복으로 만들지 않는다).
+    """
+    edges = [start] + [t for t in cut_times if start + MIN_CUT_SEC <= t <= end - MIN_CUT_SEC] + [end]
+    shots: list[tuple[float, float]] = []
+    for a, b in zip(edges, edges[1:]):
+        if shots and b - a < MIN_CUT_SEC:
+            shots[-1] = (shots[-1][0], b)
+        else:
+            shots.append((a, b))
+    out: list[tuple[float, float, bool]] = []
+    for a, b in shots:
+        n = max(1, math.ceil((b - a) / max_len - 1e-6)) if max_len else 1
+        step = (b - a) / n
+        for k in range(n):
+            out.append((round(a + k * step, 2), round(a + (k + 1) * step if k < n - 1 else b, 2), k > 0))
+    return out
+
+
+def has_cut_at(t: float, cut_times: list[float], tol: float = 0.15) -> bool:
+    """t 시점에 화면이 바뀌는지 (구간 경계에서 같은 샷이 이어지는지 판단)."""
+    return any(abs(c - t) <= tol for c in cut_times)
+
+
+def extract_cut_frames(src: Path, frames_dir: Path, cuts: list[tuple[int, int, float]]) -> None:
+    """[(구간 번호, 컷 번호, 시점)] 마다 프레임 한 장 (frames/cut_구간_컷.jpg)."""
+    jobs = [(t, frames_dir / f"cut_{seg:04d}_{k}.jpg") for seg, k, t in cuts]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda j: extract_frame(src, j[0], j[1]), jobs))

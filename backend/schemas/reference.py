@@ -19,6 +19,16 @@ class SceneDetail(BaseModel):
     product: str = ""  # 제품 노출 방식 (손에 듦, 클로즈업, 미노출 등)
 
 
+class RefCut(BaseModel):
+    """구간 안의 컷 하나. 화면 전환을 감지해 나누고, 한 컷이 너무 길면(MAX_CUT_SEC) 다시 나눈다."""
+    start: float  # 영상 기준 초
+    end: float
+    frame: str = ""  # 이 컷의 대표 프레임 (프로젝트 폴더 기준 reference/ 상대경로)
+    split: bool = False  # 화면 전환 없이 길이 때문에 나눈 컷 (MAX_CUT_SEC를 쓸 때만)
+    cont: bool = False  # 앞 구간(앞 장면)의 마지막 컷과 같은 샷이 이어짐 → 이미지·영상을 새로 만들지 않고 이어 쓴다
+    description: str = ""  # 이 컷 화면 묘사: 샷 크기·앵글·피사체 위치·동작·배경·제품 노출 (한국어)
+
+
 class Segment(BaseModel):
     index: int
     start: float
@@ -29,7 +39,8 @@ class Segment(BaseModel):
     dialogue: str = ""  # 한 줄 = 한 문장
     shot_type: str = ""
     role: str = ""
-    merged_from: list[int] = Field(default_factory=list)  # 동일 대사로 병합된 원래 2초 구간 번호
+    merged_from: list[int] = Field(default_factory=list)  # 동일 대사로 병합된 원래 1초 구간 번호
+    cuts: list[RefCut] = Field(default_factory=list)  # 구간 안의 컷 (비어 있으면 예전 분석 → 영상 제작 단계에서 길이로 나눔)
 
 
 class Tone(BaseModel):

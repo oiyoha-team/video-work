@@ -40,6 +40,11 @@ class SceneContext:
     anchor_image: Path | None = None  # 기준 장면 이미지 (기준 장면 자신을 만들 때는 None)
     video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트
     ref_follow: str = "medium"  # low면 레퍼런스 컷을 넘기지 않음, medium/high면 구도 참고로 넘김
+    duration: float = 0  # 이 컷의 길이 (초). 0이면 장면 길이
+
+    @property
+    def clip_len(self) -> float:
+        return self.duration if self.duration > 0 else max(self.scene.end - self.scene.start, 0.1)
 
 
 class VisualEngine(Protocol):
@@ -72,7 +77,7 @@ class MockVisualEngine:
 
     def animate(self, image: Path, ctx: SceneContext, out: Path) -> None:
         w, h = media.RESOLUTIONS[ctx.aspect]
-        frames = max(1, round((ctx.scene.end - ctx.scene.start) * media.FPS))
+        frames = max(1, round(ctx.clip_len * media.FPS))
         step = 0.12 / frames
         motion = ctx.motion.lower()
         if "out" in motion:
@@ -132,7 +137,7 @@ class HiggsfieldEngine:
         spec = catalog.spec("video", ctx.video_model)
         if spec is None:
             raise RuntimeError(f"영상 모델 {ctx.video_model}을(를) 쓸 수 없습니다. 다른 모델을 고르세요.")
-        seconds = catalog.clip_seconds(spec, ctx.scene.end - ctx.scene.start)
+        seconds = catalog.clip_seconds(spec, ctx.clip_len)
         res = higgsfield.generate(ctx.video_model, catalog.video_body(spec, higgsfield.upload(image), video_prompt(ctx), seconds, ctx.aspect))
         higgsfield.download(res["video"]["url"], out)
 

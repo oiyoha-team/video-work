@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import ChatPanel from "../components/ChatPanel";
 import { AutoTextarea, ErrorBox, JobProgress, useDebouncedEffect } from "../components/common";
@@ -13,6 +13,16 @@ interface Props {
 }
 
 type SaveState = "saved" | "dirty" | "saving" | "error";
+
+const NEW_SCENE_SEC = 2; // 새로 넣는 장면의 기본 길이 (초)
+
+function AddSceneButton({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
+  return (
+    <button className="add-scene" disabled={disabled} onClick={onClick} title="여기에 장면 추가">
+      + 장면 추가
+    </button>
+  );
+}
 
 export default function Step3Script({ project, status, onRefresh, onNext }: Props) {
   const [script, setScript] = useState<Script | null>(null);
@@ -65,7 +75,45 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
 
   const editScene = (id: string, patch: Partial<Scene>) => {
     if (!script) return;
-    edit({ ...script, scenes: script.scenes.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
+    edit({ ...script, scenes: retime(script.scenes.map((s) => (s.id === id ? { ...s, ...patch } : s))) });
+  };
+
+  /** 장면 시간을 앞에서부터 이어 붙인다 (장면을 넣거나 빼면 뒤 장면 시간이 따라 움직임) */
+  const retime = (list: Scene[]): Scene[] => {
+    let t = 0;
+    return list.map((s) => {
+      const len = Math.max(0.5, s.end - s.start);
+      const next = { ...s, start: Math.round(t * 100) / 100, end: Math.round((t + len) * 100) / 100 };
+      t += len;
+      return next;
+    });
+  };
+
+  /** index 위치(0 = 맨 앞)에 새 장면을 넣는다. 레퍼런스와 짝이 없는 장면이라 길이·대사를 직접 정한다 */
+  const insertScene = (index: number) => {
+    if (!script) return;
+    const scene: Scene = {
+      id: `n${Date.now().toString(36)}`, // 지운 장면 번호를 다시 쓰지 않게 (영상 제작 단계 결과가 섞이지 않도록)
+      start: 0,
+      end: NEW_SCENE_SEC,
+      role: "",
+      dialogue: "",
+      ref_segment: null,
+    };
+    const list = [...script.scenes];
+    list.splice(index, 0, scene);
+    edit({ ...script, scenes: retime(list) });
+  };
+
+  const removeScene = (scene: Scene, no: number) => {
+    if (!script) return;
+    if (script.scenes.length <= 1) {
+      setError("장면이 하나뿐이라 지울 수 없습니다.");
+      return;
+    }
+    const what = scene.dialogue.trim() ? `\n대사: ${scene.dialogue.split("\n")[0]}` : "";
+    if (!confirm(`#${String(no).padStart(2, "0")} 장면을 지울까요?${what}\n영상 제작 단계에서 이 장면에 만든 이미지·영상·음성도 쓰지 않게 됩니다.`)) return;
+    edit({ ...script, scenes: retime(script.scenes.filter((s) => s.id !== scene.id)) });
   };
 
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -111,6 +159,15 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
       await api.setAspectRatio(project.id, v);
       await loadScript();
       await onRefresh();
+    });
+
+  /** 3단계 초기화: 스크립트·대화 기록과 그 뒤 영상 제작 결과를 지운다 */
+  const resetStep3 = () =>
+    run("초기화 중", async () => {
+      if (!confirm("스크립트와 Claude 대화 기록을 지우고 [스크립트 생성]부터 다시 시작합니다.\n장면이 바뀌므로 영상 제작(5단계) 결과도 함께 지워집니다.\n\n되돌릴 수 없습니다. 초기화할까요?")) return;
+      await api.resetStep(project.id, 3);
+      await onRefresh();
+      await loadScript();
     });
 
   const reopen = () =>
@@ -212,9 +269,13 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
               <button className="btn small" disabled={locked || !!busy} onClick={regenerateAll}>
                 전체 재생성
               </button>
+              <button className="btn small ghost danger" disabled={!!busy} onClick={resetStep3}>
+                3단계 초기화
+              </button>
             </div>
           </div>
 
+          {!locked && <AddSceneButton disabled={!!busy || regenId !== null} onClick={() => insertScene(0)} />}
           {script.scenes.map((scene, i) => {
             const ref = refSeg(scene.ref_segment);
             const dur = scene.end - scene.start;
@@ -223,13 +284,32 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
             const refLines = ref ? splitSentences(ref.dialogue) : [];
             const myLines = splitSentences(scene.dialogue);
             return (
-              <article key={scene.id} className={`scene-card ${regenId === scene.id ? "loading" : ""}`}>
+              <Fragment key={scene.id}>
+              <article className={`scene-card ${regenId === scene.id ? "loading" : ""}`}>
                 <header className="scene-head">
                   <span className="scene-no">#{String(i + 1).padStart(2, "0")}</span>
                   <span className="scene-time">
                     {fmtTime(scene.start)}–{fmtTime(scene.end)}
                   </span>
                   {scene.role && <span className="chip">{roleLabel(scene.role)}</span>}
+                  {scene.ref_segment === null && (
+                    <>
+                      <span className="chip">추가한 장면</span>
+                      <label className="row small scene-len">
+                        길이
+                        <input
+                          type="number"
+                          min={0.5}
+                          max={15}
+                          step={0.5}
+                          value={Math.round(dur * 10) / 10}
+                          disabled={locked}
+                          onChange={(e) => editScene(scene.id, { end: scene.start + Math.max(0.5, Number(e.target.value) || NEW_SCENE_SEC) })}
+                        />
+                        초
+                      </label>
+                    </>
+                  )}
                   <button
                     className="btn small ghost push"
                     disabled={locked || !configured || regenId !== null}
@@ -238,6 +318,11 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
                   >
                     {regenId === scene.id ? "작성 중…" : "↻ 이 장면 재생성"}
                   </button>
+                  {!locked && (
+                    <button className="icon-btn" title="이 장면 삭제" disabled={regenId !== null} onClick={() => removeScene(scene, i + 1)}>
+                      ×
+                    </button>
+                  )}
                 </header>
 
                 <div className="dialogue-pair">
@@ -269,6 +354,8 @@ export default function Step3Script({ project, status, onRefresh, onNext }: Prop
                   </label>
                 </div>
               </article>
+              {!locked && <AddSceneButton disabled={!!busy || regenId !== null} onClick={() => insertScene(i + 1)} />}
+              </Fragment>
             );
           })}
         </section>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, dataUrl } from "../api";
 import { AutoTextarea, ErrorBox, ErrorText, ProgressLine, fmtDur, useNow } from "../components/common";
 import { fmtTime, roleLabel } from "../labels";
@@ -292,6 +292,52 @@ function RegenForm({ kind, scene, count, eta, cost, onSubmit, onCancel, disabled
   );
 }
 
+/** 컷과 컷 사이의 [+ 컷 추가] */
+function AddCutButton({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
+  return (
+    <button className="add-cut" disabled={disabled} onClick={onClick} title="여기에 컷 추가 (옆 컷 시간을 반으로 나눠 씁니다)">
+      + 컷 추가
+    </button>
+  );
+}
+
+function AddCutForm({ title, eta, cost, disabled, onSubmit, onCancel }: {
+  title: string;
+  eta: string;
+  cost: string;
+  disabled: boolean;
+  onSubmit: (note: string, generate: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  return (
+    <div className="regen-form" onClick={(e) => e.stopPropagation()}>
+      <b className="small">{title}</b>
+      <AutoTextarea
+        value={text}
+        onChange={setText}
+        minRows={3}
+        placeholder={"이 컷에 넣을 장면 (선택) — 비워 두면 앞뒤 컷을 자연스럽게 잇는 컷을 만듭니다.\n예: 제품 파우치를 손바닥 위에 올려 카메라 쪽으로 내미는 클로즈업"}
+      />
+      <span className="muted small">
+        새 컷은 옆 컷의 시간을 반으로 나눠 씁니다 · 이미지 {eta.replace("예상 소요 ", "")}
+        {cost && ` · 예상 비용 ${cost}`}
+      </span>
+      <div className="row wrap">
+        <button className="btn small primary" disabled={disabled} onClick={() => onSubmit(text.trim(), true)}>
+          추가하고 이미지 만들기
+        </button>
+        <button className="btn small" disabled={disabled} onClick={() => onSubmit(text.trim(), false)}>
+          컷만 추가
+        </button>
+        <button className="btn small ghost" onClick={onCancel}>
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 다시 만든 장면의 이전 / 새 결과를 크게 나란히 보여 주고 고르게 한다 (장면 줄 아래 전체 폭) */
 function ComparePanel({ kind, scene, ratio, prevSrc, newSrc, prevNote, newNote, disabled, onChoose, onZoom }: {
   kind: "image" | "video";
@@ -381,6 +427,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   const [form, setForm] = useState<TTSForm | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [selInstruction, setSelInstruction] = useState("");
+  const [adding, setAdding] = useState<{ sceneId: string; after: string | null } | null>(null);
   const player = useRef<HTMLAudioElement | null>(null);
   const vJob = project.visual_job;
   const sJob = project.sound_job;
@@ -425,10 +472,13 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
     if (prod.visual.cast_image)
       out.push({ key: "cast:image", kind: "image", label: "인물 기준", src: `${dataUrl(project.id, prod.visual.cast_image)}?v=${prod.visual.cast_v}` });
     scenes.forEach((s, i) => {
-      const va = prod.visual.scenes[s.id];
-      const no = `#${String(i + 1).padStart(2, "0")}`;
-      if (va?.image) out.push({ key: `${s.id}:image`, kind: "image", label: `${no} 이미지`, src: `${dataUrl(project.id, va.image)}?v=${va.v}` });
-      if (va?.video) out.push({ key: `${s.id}:video`, kind: "video", label: `${no} 영상 클립`, src: `${dataUrl(project.id, va.video)}?v=${va.v}` });
+      const ids = prod.visual.scene_cuts[s.id] ?? [s.id];
+      ids.forEach((cid, k) => {
+        const va = prod.visual.scenes[cid];
+        const no = `#${String(i + 1).padStart(2, "0")}${ids.length > 1 ? `-${k + 1}` : ""}`;
+        if (va?.image) out.push({ key: `${cid}:image`, kind: "image", label: `${no} 이미지`, src: `${dataUrl(project.id, va.image)}?v=${va.v}` });
+        if (va?.video) out.push({ key: `${cid}:video`, kind: "video", label: `${no} 영상 클립`, src: `${dataUrl(project.id, va.video)}?v=${va.v}` });
+      });
     });
     return out;
   }, [prod, scenes, project.id]);
@@ -481,20 +531,59 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   const anchor = prod.visual.anchor_scene;
   const ratio = ASPECT_CSS[script.meta.aspect_ratio] ?? "9 / 16";
   const url = (rel: string, v: number) => `${dataUrl(project.id, rel)}?v=${v}`;
-  const toAnimate = scenes.filter((s) => vs[s.id]?.image && !vs[s.id]?.video).map((s) => s.id);
+  const cutsOf = (sid: string) => prod.visual.scene_cuts[sid] ?? [sid];
+  const orderAll = scenes.flatMap((s) => cutsOf(s.id)); // 이어 쓰는 컷 포함
+  /** 앞 장면 컷을 이어 쓰는 컷이면 이미지·영상을 가진 대표 컷 */
+  const ownerOf = (cid: string) => {
+    let i = orderAll.indexOf(cid);
+    while (i > 0 && vs[orderAll[i]]?.link_prev) i -= 1;
+    return i >= 0 ? orderAll[i] : cid;
+  };
+  const isLinked = (cid: string) => ownerOf(cid) !== cid;
+  const allCuts = orderAll.filter((cid) => !isLinked(cid)); // 실제로 만드는 컷
+  const toAnimate = allCuts.filter((cid) => vs[cid]?.image && !vs[cid]?.video);
   const sel = scenes.map((s) => s.id).filter((id) => selected.has(id));
+  const selCuts = sel.flatMap(cutsOf); // 고른 장면의 모든 컷 (이미지·영상은 컷 단위)
   const lock = !!busy;
   const openItem = (key: string) => {
     const i = allItems.findIndex((x) => x.key === key);
     if (i >= 0) setView({ items: allItems, index: i });
   };
   const sceneNo = (id: string) => `#${String(scenes.findIndex((s) => s.id === id) + 1).padStart(2, "0")}`;
+  /** "#03-2" (장면 3의 두 번째 컷) */
+  const cutNo = (cid: string) => {
+    const sid = vs[cid]?.scene_id || cid;
+    const ids = cutsOf(sid);
+    return ids.length > 1 ? `${sceneNo(sid)}-${ids.indexOf(cid) + 1}` : sceneNo(sid);
+  };
+  const addCut = (sceneId: string, after: string | null, note: string, generate: boolean) =>
+    run("addcut", async () => {
+      const before = new Set(Object.keys(vs));
+      const next = await api.addCut(project.id, sceneId, after, note);
+      setProd(next);
+      setAdding(null);
+      const created = (next.visual.scene_cuts[sceneId] ?? []).find((cid) => !before.has(cid));
+      if (generate && created && confirmCost("새 컷의 이미지를 만듭니다.", imageCost([created]))) {
+        await api.generateImages(project.id, [created], note);
+        await onRefresh();
+        setProd(await api.getProduction(project.id));
+      }
+    });
+  const unlinkCut = (cid: string) =>
+    run("unlink", async () => {
+      setProd(await api.unlinkCut(project.id, cid));
+      setEditing({ kind: "image", sceneId: cid });
+    });
+  const removeCut = (cid: string) => {
+    if (!confirm(`${cutNo(cid)} 컷을 지울까요? 이 컷의 이미지·영상도 지워지고, 시간은 옆 컷에 붙습니다.`)) return;
+    run("delcut", async () => setProd(await api.deleteCut(project.id, cid)));
+  };
 
   const makeImages = (ids: string[] | undefined, instruction = "") => {
-    const target = ids ?? scenes.map((s) => s.id);
+    const target = ids ?? allCuts;
     const what = ids
-      ? `장면 ${target.length}개의 이미지를 다시 만듭니다${instruction ? ` (수정 지시: ${instruction})` : ""}.\n그 장면의 영상은 새 이미지를 승인한 뒤 다시 만들어집니다.`
-      : `장면 ${target.length}개의 이미지를 새로 만듭니다.\n레퍼런스의 그림체·후킹·구성을 빌려 첫 장면(기준)을 만들고, 나머지 장면은 그 기준을 따릅니다.`;
+      ? `컷 ${target.length}개의 이미지를 다시 만듭니다${instruction ? ` (수정 지시: ${instruction})` : ""}.\n그 컷의 영상은 새 이미지를 승인한 뒤 다시 만들어집니다.`
+      : `컷 ${target.length}개(장면 ${scenes.length}개)의 이미지를 새로 만듭니다.\n레퍼런스의 그림체·후킹·컷 구성을 빌려 첫 컷(기준)을 만들고, 나머지 컷은 그 기준을 따릅니다.\n레퍼런스에서 화면이 바뀌는 곳마다 컷을 나누고, 한 컷은 2초를 넘지 않습니다.`;
     if (!confirmCost(what, imageCost(target))) return false;
     setEditing(null);
     startJob("images", () => api.generateImages(project.id, ids, instruction));
@@ -503,15 +592,15 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
   /** [이미지 전체 승인 → 영상화]: 영상이 없는 장면(처음엔 전체, 이후엔 이미지를 다시 만든 장면)을 영상화한다 */
   const approveAll = () => {
     const pending = st.comparing ? `\n이전/새 결과를 고르지 않은 장면 ${st.comparing}개는 새 결과로 확정됩니다.` : "";
-    if (confirmCost(`이미지를 전체 승인하고 장면 ${toAnimate.length}개를 영상화합니다 (${estimate?.video_model}).${pending}`, videoCost(toAnimate)))
+    if (confirmCost(`이미지를 전체 승인하고 컷 ${toAnimate.length}개를 영상화합니다 (${estimate?.video_model}).${pending}`, videoCost(toAnimate)))
       startJob("approve", () => api.approveAllImages(project.id));
   };
   const remakeVideos = (ids: string[], instruction = "") => {
     if (ids.some((id) => !vs[id]?.image_approved)) {
-      setError("이미지를 다시 만든 장면이 있습니다. [이미지 전체 승인 → 영상화]를 먼저 눌러 주세요.");
+      setError("이미지를 다시 만들었거나 아직 이미지가 없는 컷이 있습니다. [이미지 전체 승인 → 영상화]를 먼저 눌러 주세요.");
       return;
     }
-    if (!confirmCost(`장면 ${ids.length}개의 영상을 다시 만듭니다 (${estimate?.video_model})${instruction ? `\n수정 지시: ${instruction}` : ""}.`, videoCost(ids)))
+    if (!confirmCost(`컷 ${ids.length}개의 영상을 다시 만듭니다 (${estimate?.video_model})${instruction ? `\n수정 지시: ${instruction}` : ""}.`, videoCost(ids)))
       return;
     setEditing(null);
     startJob("videos", () => api.generateVideos(project.id, ids, instruction));
@@ -555,8 +644,8 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
     });
   const allSelected = sel.length === scenes.length && scenes.length > 0;
   const anchorNote = (ids: string[]) =>
-    anchor && ids.includes(anchor) && ids.length < scenes.length
-      ? "기준 장면(첫 장면)을 바꾸면, 나머지 장면은 다시 만들 때부터 새 기준의 그림체·인물을 따릅니다."
+    anchor && ids.includes(anchor) && ids.length < allCuts.length
+      ? "기준 컷(첫 컷)을 바꾸면, 나머지 컷은 다시 만들 때부터 새 기준의 그림체·인물을 따릅니다."
       : undefined;
 
   return (
@@ -583,7 +672,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               <b>
                 {st.images}/{st.total}
               </b>
-              <span>장면 이미지</span>
+              <span>컷 이미지 (장면 {st.scenes}개)</span>
             </div>
             <div>
               <b>
@@ -695,7 +784,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
             <button
               className="btn small primary"
               disabled={vRunning || lock || st.images < st.total || !toAnimate.length}
-              title={st.images < st.total ? "모든 장면의 이미지가 있어야 합니다" : ""}
+              title={st.images < st.total ? "모든 컷의 이미지가 있어야 합니다" : ""}
               onClick={approveAll}
             >
               {busy === "approve" ? <span className="spinner tiny" /> : null}
@@ -704,7 +793,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
           </div>
           {!st.images && !vRunning && (
             <span className="muted small">
-              예상 소요: 장면 설계 약 1~2분 + 이미지 {parallelEta("image", Math.max(st.total, 1), false).replace("예상 소요 ", "")}
+              예상 소요: 컷 설계 약 1~3분 + 이미지 {parallelEta("image", Math.max(st.total, 1), false).replace("예상 소요 ", "")}
             </span>
           )}
         </div>
@@ -722,7 +811,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
           <div className="track-stats">
             <div>
               <b>
-                {st.audios}/{st.total}
+                {st.audios}/{st.scenes}
               </b>
               <span>장면 음성 ({st.lines}문장)</span>
             </div>
@@ -753,7 +842,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
           <span className="small">
             {sel.length ? (
               <>
-                <b>{sel.length}개 장면 선택됨</b> ({sel.map(sceneNo).join(", ")})
+                <b>{sel.length}개 장면 선택됨</b> ({sel.map(sceneNo).join(", ")} · 컷 {selCuts.length}개)
               </>
             ) : (
               "☑ 장면 왼쪽 체크박스로 여러 장면을 골라 한 번에 다시 만들 수 있습니다 (맨 앞 체크박스 = 전체 선택)"
@@ -769,10 +858,10 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
             />
             {anchorNote(sel) && <span className="small warn-text">{anchorNote(sel)}</span>}
             <div className="row wrap">
-              <button className="btn small" disabled={vRunning || lock} onClick={() => makeImages(sel, selInstruction.trim()) && setSelInstruction("")}>
+              <button className="btn small" disabled={vRunning || lock} onClick={() => makeImages(selCuts, selInstruction.trim()) && setSelInstruction("")}>
                 이미지 다시 만들기
               </button>
-              <button className="btn small" disabled={vRunning || lock} onClick={() => remakeVideos(sel, selInstruction.trim())}>
+              <button className="btn small" disabled={vRunning || lock} onClick={() => remakeVideos(selCuts.filter((c) => vs[c]?.video || vs[c]?.image_approved), selInstruction.trim())}>
                 영상 다시 만들기
               </button>
               <button className="btn small" disabled={sRunning || lock} onClick={() => makeSound(sel)}>
@@ -781,7 +870,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               <button className="btn small ghost" onClick={() => setSelected(new Set())}>
                 선택 해제
               </button>
-              <span className="muted small">{parallelEta("image", sel.length, !!selInstruction.trim())} (이미지 기준)</span>
+              <span className="muted small">{parallelEta("image", selCuts.length, !!selInstruction.trim())} (이미지 기준)</span>
             </div>
           </div>
         )}
@@ -791,22 +880,16 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
         <div className="prod-row prod-head">
           <div>장면</div>
           <div>대사 · 장면 설계</div>
-          <div>이미지</div>
-          <div>영상 클립</div>
+          <div>컷 이미지</div>
+          <div>컷 영상</div>
           <div>음성 (문장별 다시 만들기)</div>
         </div>
         {scenes.map((s, i) => {
-          const va = vs[s.id];
           const sa = ss[s.id];
           const dur = s.end - s.start;
           const over = sa && sa.lines.length > 0 && sa.duration > dur + 0.05;
-          const prev = va?.prev;
-          // 다시 만드는 중에는 비교 대신 진행 표시를 보여 준다
-          const comparingImage = !!prev && !va?.busy && prev.image !== va?.image;
-          const comparingVideo = !!prev && !va?.busy && !comparingImage && !!prev.video && prev.video !== va?.video;
-          const isAnchor = s.id === anchor;
-          const editImage = editing?.sceneId === s.id && editing.kind === "image";
-          const editVideo = editing?.sceneId === s.id && editing.kind === "video";
+          const cuts = cutsOf(s.id);
+          const notes = cuts.map((cid) => vs[cid]?.instruction).filter(Boolean);
           return (
             <div key={s.id} className={`prod-row ${selected.has(s.id) ? "selected" : ""}`}>
               <div className="seg-time">
@@ -818,81 +901,146 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                   {fmtTime(s.start)}–{fmtTime(s.end)}
                 </span>
                 {s.role && <span className="chip">{roleLabel(s.role)}</span>}
-                {isAnchor && (
-                  <span className="chip anchor-chip" title="나머지 장면이 이 장면의 그림체·인물·분위기를 따릅니다">
-                    기준 장면
-                  </span>
-                )}
+                <span className="muted small">컷 {cuts.length}개</span>
               </div>
               <div className="prod-text">
                 <div className="pre">{s.dialogue || <span className="muted">(대사 없음)</span>}</div>
-                {va?.instruction && <div className="small instruction-note">✎ 반영한 수정 지시: {va.instruction}</div>}
-                {va?.prompt && (
+                {notes.length > 0 && <div className="small instruction-note">✎ 반영한 수정 지시: {notes.join(" / ")}</div>}
+                {cuts.some((cid) => vs[cid]?.prompt) && (
                   <details className="detail-toggle">
-                    <summary>장면 설계 (이미지 AI 프롬프트){va.motion ? ` · ${va.motion}` : ""}</summary>
-                    <div className="small muted brief">{va.prompt}</div>
-                    {va.video_prompt && <div className="small muted brief">영상: {va.video_prompt}</div>}
+                    <summary>컷 설계 (이미지 AI 프롬프트)</summary>
+                    {cuts.map((cid, k) => (
+                      <div key={cid} className="small muted brief">
+                        <b>컷 {k + 1}</b> {vs[cid]?.prompt || "-"}
+                        {vs[cid]?.ref_desc && <div className="ref-desc">레퍼런스 컷: {vs[cid]?.ref_desc}</div>}
+                      </div>
+                    ))}
                   </details>
                 )}
               </div>
 
-              <div className="media-cell">
-                <div
-                  className={`media-box ${va?.image ? "zoomable" : ""} ${comparingImage ? "comparing" : ""}`}
-                  style={{ aspectRatio: ratio }}
-                  onClick={() => va?.image && openItem(`${s.id}:image`)}
-                  title={va?.image ? "크게 보기" : ""}
-                >
-                  {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">대기</span>}
-                  {comparingImage && <span className="compare-tag">비교 중 ↓</span>}
-                  <BusyOverlay asset={va} kind="image" typical={prod.typical.image} now={now} />
-                </div>
-                <button
-                  className={`btn small regen-btn ${editImage ? "on" : ""}`}
-                  disabled={vRunning || lock || !!va?.busy}
-                  title="수정 지시를 넣어 이 장면 이미지만 다시 만들기"
-                  onClick={() => setEditing(editImage ? null : { kind: "image", sceneId: s.id })}
-                >
-                  ↻ 이미지 수정
-                </button>
-                {va?.error && !va.busy && (
-                  <div className="cell-error">
-                    <ErrorText message={va.error} />
-                  </div>
-                )}
-              </div>
-
-              <div className="media-cell">
-                <div
-                  className={`media-box ${va?.video ? "zoomable" : ""} ${comparingVideo ? "comparing" : ""}`}
-                  style={{ aspectRatio: ratio }}
-                  onClick={() => va?.video && openItem(`${s.id}:video`)}
-                  title={va?.video ? "크게 보기" : ""}
-                >
-                  {va?.video ? (
-                    <video
-                      src={url(va.video, va.v)}
-                      preload="metadata"
-                      muted
-                      loop
-                      playsInline
-                      onMouseEnter={(e) => e.currentTarget.play()}
-                      onMouseLeave={(e) => e.currentTarget.pause()}
-                    />
-                  ) : (
-                    <span className="muted small">{va?.image ? "전체 승인 후 영상화" : "대기"}</span>
-                  )}
-                  {comparingVideo && <span className="compare-tag">비교 중 ↓</span>}
-                  <BusyOverlay asset={va} kind="video" typical={prod.typical.video} now={now} />
-                </div>
-                <button
-                  className={`btn small regen-btn ${editVideo ? "on" : ""}`}
-                  disabled={vRunning || lock || !va?.video || !!va?.busy}
-                  title={va?.video ? "수정 지시를 넣어 이 장면 영상만 다시 만들기" : "이미지 전체 승인 후 영상화됩니다"}
-                  onClick={() => setEditing(editVideo ? null : { kind: "video", sceneId: s.id })}
-                >
-                  ↻ 영상 수정
-                </button>
+              <div className="cuts-cell">
+                {cuts.map((cid, k) => {
+                  const va = vs[cid];
+                  const prev = va?.prev;
+                  const cmpImg = !!prev && !va?.busy && prev.image !== va?.image;
+                  const cmpVid = !!prev && !va?.busy && !cmpImg && !!prev.video && prev.video !== va?.video;
+                  const isAnchor = cid === anchor;
+                  return (
+                    <div key={cid} className="cut-block">
+                      {k === 0 && <AddCutButton disabled={vRunning || lock} onClick={() => setAdding({ sceneId: s.id, after: null })} />}
+                      <div className="cut-head small">
+                        <b>컷 {k + 1}</b>
+                        <span className="muted">
+                          {(va?.start ?? 0).toFixed(1)}–{(va?.end ?? dur).toFixed(1)}초
+                        </span>
+                        {isAnchor && (
+                          <span className="chip anchor-chip" title="나머지 컷이 이 컷의 그림체·인물·분위기를 따릅니다">
+                            기준
+                          </span>
+                        )}
+                        {va?.added && <span className="chip">추가한 컷</span>}
+                        {isLinked(cid) && (
+                          <span className="chip" title="레퍼런스에서 앞 장면의 샷이 그대로 이어지는 부분입니다. 같은 이미지·영상을 이어 써서 크레딧을 아낍니다">
+                            앞 컷 이어짐
+                          </span>
+                        )}
+                        {va?.split && !va?.added && (
+                          <span className="chip" title="레퍼런스에서 한 샷이 길게 이어진 부분 — 앞 컷과 다른 샷으로 변주합니다">
+                            변주
+                          </span>
+                        )}
+                        <span className="push" />
+                        {cuts.length > 1 && (
+                          <button className="icon-btn" title="이 컷 삭제 (시간은 옆 컷에 붙습니다)" disabled={vRunning || lock || !!va?.busy} onClick={() => removeCut(cid)}>
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      {isLinked(cid) && (
+                        <div className="linked-cut">
+                          <div className="cut-row">
+                            {(["image", "video"] as const).map((kind) => {
+                              const o = vs[ownerOf(cid)];
+                              const rel = kind === "image" ? o?.image : o?.video;
+                              return (
+                                <div key={kind} className="media-box linked" style={{ aspectRatio: ratio }}>
+                                  {rel && kind === "image" && <img src={url(rel, o!.v)} alt="" />}
+                                  {rel && kind === "video" && <video src={url(rel, o!.v)} preload="metadata" muted playsInline />}
+                                  <span className="compare-tag">{cutNo(ownerOf(cid))} 이어짐</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <span className="muted small">같은 샷이라 {cutNo(ownerOf(cid))} 컷의 이미지·영상을 이어 씁니다 (추가 비용 없음)</span>
+                          <button className="btn small" disabled={vRunning || lock} onClick={() => unlinkCut(cid)}>
+                            따로 만들기
+                          </button>
+                        </div>
+                      )}
+                      <div className={`cut-row ${isLinked(cid) ? "hidden" : ""}`}>
+                        <div className="media-cell">
+                          <div
+                            className={`media-box ${va?.image ? "zoomable" : ""} ${cmpImg ? "comparing" : ""}`}
+                            style={{ aspectRatio: ratio }}
+                            onClick={() => va?.image && openItem(`${cid}:image`)}
+                            title={va?.image ? "크게 보기" : ""}
+                          >
+                            {va?.image ? <img src={url(va.image, va.v)} alt="" /> : <span className="muted small">{va?.added ? "새 컷" : "대기"}</span>}
+                            {cmpImg && <span className="compare-tag">비교 중 ↓</span>}
+                            <BusyOverlay asset={va} kind="image" typical={prod.typical.image} now={now} />
+                          </div>
+                          <button
+                            className={`btn small regen-btn ${editing?.sceneId === cid && editing.kind === "image" ? "on" : ""}`}
+                            disabled={vRunning || lock || !!va?.busy}
+                            title="수정 지시를 넣어 이 컷 이미지만 다시 만들기"
+                            onClick={() => setEditing(editing?.sceneId === cid && editing.kind === "image" ? null : { kind: "image", sceneId: cid })}
+                          >
+                            {va?.image ? "↻ 이미지" : "이미지 만들기"}
+                          </button>
+                        </div>
+                        <div className="media-cell">
+                          <div
+                            className={`media-box ${va?.video ? "zoomable" : ""} ${cmpVid ? "comparing" : ""}`}
+                            style={{ aspectRatio: ratio }}
+                            onClick={() => va?.video && openItem(`${cid}:video`)}
+                            title={va?.video ? "크게 보기" : ""}
+                          >
+                            {va?.video ? (
+                              <video
+                                src={url(va.video, va.v)}
+                                preload="metadata"
+                                muted
+                                loop
+                                playsInline
+                                onMouseEnter={(e) => e.currentTarget.play()}
+                                onMouseLeave={(e) => e.currentTarget.pause()}
+                              />
+                            ) : (
+                              <span className="muted small">{va?.image ? "승인 후 영상화" : "대기"}</span>
+                            )}
+                            {cmpVid && <span className="compare-tag">비교 중 ↓</span>}
+                            <BusyOverlay asset={va} kind="video" typical={prod.typical.video} now={now} />
+                          </div>
+                          <button
+                            className={`btn small regen-btn ${editing?.sceneId === cid && editing.kind === "video" ? "on" : ""}`}
+                            disabled={vRunning || lock || !va?.video || !!va?.busy}
+                            title={va?.video ? "수정 지시를 넣어 이 컷 영상만 다시 만들기" : "이미지 전체 승인 후 영상화됩니다"}
+                            onClick={() => setEditing(editing?.sceneId === cid && editing.kind === "video" ? null : { kind: "video", sceneId: cid })}
+                          >
+                            ↻ 영상
+                          </button>
+                        </div>
+                      </div>
+                      {va?.error && !va.busy && (
+                        <div className="cell-error">
+                          <ErrorText message={va.error} />
+                        </div>
+                      )}
+                      <AddCutButton disabled={vRunning || lock} onClick={() => setAdding({ sceneId: s.id, after: cid })} />
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="audio-cell">
@@ -942,50 +1090,72 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                 </button>
               </div>
 
-              {/* 이전/새 비교와 수정 지시는 장면 줄 아래 전체 폭으로 (좁은 칸에 넣으면 옆 칸과 겹친다) */}
-              {(comparingImage || comparingVideo) && prev && va && (
-                <ComparePanel
-                  kind={comparingImage ? "image" : "video"}
-                  scene={sceneNo(s.id)}
-                  ratio={ratio}
-                  prevSrc={url((comparingImage ? prev.image : prev.video) ?? "", prev.v)}
-                  newSrc={url((comparingImage ? va.image : va.video) ?? "", va.v)}
-                  prevNote={prev.instruction}
-                  newNote={va.instruction}
-                  disabled={lock || !!va.busy}
-                  onChoose={(keep) => choose(s.id, keep)}
-                  onZoom={(items, index) => setView({ items, index })}
-                />
-              )}
-              {editImage && (
+              {/* 컷 추가 · 이전/새 비교 · 수정 지시는 장면 줄 아래 전체 폭으로 (좁은 칸에 넣으면 옆 칸과 겹친다) */}
+              {adding?.sceneId === s.id && (
                 <div className="row-panel">
-                  <RegenForm
-                    kind="image"
-                    scene={sceneNo(s.id)}
-                    count={1}
+                  <AddCutForm
+                    title={`${sceneNo(s.id)} 장면 · ${adding.after ? `${cutNo(adding.after)} 뒤에` : "맨 앞에"} 컷 추가`}
                     eta={parallelEta("image", 1, true)}
-                    cost={billable ? usd(imageCost([s.id])) : ""}
+                    cost={billable ? usd(imageCost(["x"])) : ""}
                     disabled={vRunning || lock}
-                    note={anchorNote([s.id])}
-                    onCancel={() => setEditing(null)}
-                    onSubmit={(text) => makeImages([s.id], text)}
+                    onCancel={() => setAdding(null)}
+                    onSubmit={(note, generate) => addCut(s.id, adding.after, note, generate)}
                   />
                 </div>
               )}
-              {editVideo && (
-                <div className="row-panel">
-                  <RegenForm
-                    kind="video"
-                    scene={sceneNo(s.id)}
-                    count={1}
-                    eta={parallelEta("video", 1, true)}
-                    cost={billable ? usd(videoCost([s.id])) : ""}
-                    disabled={vRunning || lock}
-                    onCancel={() => setEditing(null)}
-                    onSubmit={(text) => remakeVideos([s.id], text)}
-                  />
-                </div>
-              )}
+              {cuts.map((cid) => {
+                const va = vs[cid];
+                const prev = va?.prev;
+                const cmpImg = !!prev && !va?.busy && prev.image !== va?.image;
+                const cmpVid = !!prev && !va?.busy && !cmpImg && !!prev.video && prev.video !== va?.video;
+                return (
+                  <Fragment key={cid}>
+                    {(cmpImg || cmpVid) && prev && va && (
+                      <ComparePanel
+                        kind={cmpImg ? "image" : "video"}
+                        scene={cutNo(cid)}
+                        ratio={ratio}
+                        prevSrc={url((cmpImg ? prev.image : prev.video) ?? "", prev.v)}
+                        newSrc={url((cmpImg ? va.image : va.video) ?? "", va.v)}
+                        prevNote={prev.instruction}
+                        newNote={va.instruction}
+                        disabled={lock || !!va.busy}
+                        onChoose={(keep) => choose(cid, keep)}
+                        onZoom={(items, index) => setView({ items, index })}
+                      />
+                    )}
+                    {editing?.sceneId === cid && editing.kind === "image" && (
+                      <div className="row-panel">
+                        <RegenForm
+                          kind="image"
+                          scene={cutNo(cid)}
+                          count={1}
+                          eta={parallelEta("image", 1, true)}
+                          cost={billable ? usd(imageCost([cid])) : ""}
+                          disabled={vRunning || lock}
+                          note={anchorNote([cid])}
+                          onCancel={() => setEditing(null)}
+                          onSubmit={(text) => makeImages([cid], text)}
+                        />
+                      </div>
+                    )}
+                    {editing?.sceneId === cid && editing.kind === "video" && (
+                      <div className="row-panel">
+                        <RegenForm
+                          kind="video"
+                          scene={cutNo(cid)}
+                          count={1}
+                          eta={parallelEta("video", 1, true)}
+                          cost={billable ? usd(videoCost([cid])) : ""}
+                          disabled={vRunning || lock}
+                          onCancel={() => setEditing(null)}
+                          onSubmit={(text) => remakeVideos([cid], text)}
+                        />
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              })}
             </div>
           );
         })}
@@ -1012,7 +1182,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
         <span className="muted">
           {st.ready
             ? "영상 클립과 음성이 모두 준비되었습니다. 마음에 안 드는 장면·문장만 다시 만든 뒤 전체 승인하세요."
-            : `이미지 ${st.images}/${st.total} · 영상 클립 ${st.videos}/${st.total} · 장면 음성 ${st.audios}/${st.total} · 다 만들지 않아도 지금까지 만든 것만 받을 수 있습니다`}
+            : `컷 이미지 ${st.images}/${st.total} · 영상 클립 ${st.videos}/${st.total} · 장면 음성 ${st.audios}/${st.scenes} · 다 만들지 않아도 지금까지 만든 것만 받을 수 있습니다`}
           {st.comparing ? ` · 이전/새 결과를 고를 장면 ${st.comparing}개` : ""}
           {" · 이미지·영상을 누르면 전체화면으로 봅니다"}
         </span>
@@ -1025,7 +1195,7 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
               const missing = [
                 st.images < st.total && `이미지 ${st.total - st.images}개`,
                 st.videos < st.total && `영상 클립 ${st.total - st.videos}개`,
-                st.audios < st.total && `장면 음성 ${st.total - st.audios}개`,
+                st.audios < st.scenes && `장면 음성 ${st.scenes - st.audios}개`,
               ].filter(Boolean);
               if (
                 !confirm(

@@ -1,19 +1,22 @@
 """Step 1: 레퍼런스 영상 분석 파이프라인.
 
-프레임/오디오 추출 → STT → 2초 구간 배정 → 동일 대사 병합 → Claude Vision 구간 분석 → 전체 톤/컨셉/페르소나 분석
+프레임/오디오 추출 → STT → 1초 구간 배정 → 동일 대사 병합 → 화면 전환 감지로 구간 안의 컷 나누기
+→ Claude Vision 구간·컷 분석 → 전체 톤/컨셉/페르소나 분석
 """
 import traceback
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from errors import explain
 from llm import claude_client
 from llm.claude_client import strict_object
-from schemas import JobState, Overall, ReferenceAnalysis, SceneDetail, Segment, SourceInfo
+from schemas import JobState, Overall, RefCut, ReferenceAnalysis, SceneDetail, Segment, SourceInfo
 
 from . import store, transcribe, video_ingest
 from .labels import ROLES, SCENE_DETAIL, SHOT_TYPES, detail_text, fmt_time
 
-VISION_BATCH = 10
+VISION_BATCH = 6  # 한 번에 분석할 구간 수 (구간마다 컷 프레임이 여러 장)
+MAX_CUT_FRAMES = 8  # 구간 하나에서 Claude에게 보여 줄 컷 프레임 최대 수
 VISION_PARALLEL = 3
 
 MOCK_NOTE = "(Claude 미연결 — 직접 입력하거나 API 키 연결 후 재분석)"
@@ -23,16 +26,22 @@ def _set_job(project_id: str, status: str, progress: float, message: str) -> Non
     store.update_project(project_id, analysis_job=JobState(status=status, progress=progress, message=message))
 
 
-def merge_identical_dialogue(segments: list[Segment], keys: list[list[int]]) -> tuple[list[Segment], list[list[int]]]:
-    """바로 이어지는 구간의 대사(문장 목록)가 '완전히 동일'할 때만 병합한다.
+def merge_identical_dialogue(segments: list[Segment], keys: list[list[int]],
+                             cut_times: list[float] | None = None) -> tuple[list[Segment], list[list[int]]]:
+    """1초 구간을 장면으로 묶는다. 다음 경우에만 앞 구간에 합친다.
 
-    keys는 구간별 문장 번호 목록이다. 문장이 하나라도 다르면 병합하지 않고,
-    대사가 없는 구간끼리도 병합하지 않는다 (장면이 다를 수 있음).
+    1. 대사(문장 목록)가 앞 구간과 '완전히 동일' (한 문장이 여러 초에 걸침)
+    2. 새 대사가 없고, 경계에서 화면도 바뀌지 않음 (같은 장면이 이어짐 → 같은 이미지를 중복으로 만들지 않게)
+    문장이 하나라도 다르거나, 대사 없는 구간이라도 화면이 바뀌면 새 장면이다.
+    cut_times가 없으면(예전 방식) 2번 규칙은 쓰지 않는다.
     """
     merged: list[Segment] = []
     merged_keys: list[list[int]] = []
     for seg, key in zip(segments, keys):
-        if merged and key and key == merged_keys[-1]:
+        same_dialogue = bool(key) and key == (merged_keys[-1] if merged else None)
+        same_shot_silent = (cut_times is not None and merged and not key
+                            and not video_ingest.has_cut_at(seg.start, cut_times))
+        if merged and (same_dialogue or same_shot_silent):
             prev = merged[-1]
             prev.end = seg.end
             prev.frames.extend(seg.frames)
@@ -46,10 +55,27 @@ def merge_identical_dialogue(segments: list[Segment], keys: list[list[int]]) -> 
     return merged, merged_keys
 
 
+def merge_silent_same_shot(segments: list[Segment], cut_times: list[float]) -> list[Segment]:
+    """문장을 한 구간에만 남긴 뒤 대사가 비게 된 구간도, 경계에서 화면이 그대로면 앞 장면에 합친다."""
+    out: list[Segment] = []
+    for seg in segments:
+        if out and not seg.dialogue.strip() and not video_ingest.has_cut_at(seg.start, cut_times):
+            prev = out[-1]
+            prev.end = seg.end
+            prev.frames.extend(seg.frames)
+            prev.merged_from.extend(seg.merged_from)
+            continue
+        out.append(seg)
+    for i, seg in enumerate(out):
+        seg.index = i
+    return out
+
+
 # ── Claude 호출 ─────────────────────────────────────────────
 
 VISION_SYSTEM = """당신은 한국 퍼포먼스 광고(숏폼) 영상 분석 전문가입니다.
-레퍼런스 영상을 2초 단위 구간으로 나눈 프레임과, 음성 인식(STT)으로 얻은 구간별 대사를 받습니다.
+레퍼런스 영상을 1초 단위로 나눈 뒤 같은 대사끼리 묶은 구간과, 구간 안의 컷(화면 전환 기준)별 프레임,
+음성 인식(STT)으로 얻은 구간별 대사를 받습니다.
 각 구간을 정확히 분석해 JSON으로 반환하세요.
 이 분석은 나중에 AI 이미지 생성으로 '레퍼런스와 비슷한 장면'을 다시 만드는 기준이 됩니다.
 프레임만 보고도 같은 장면을 그릴 수 있을 만큼 구체적으로, 보이는 사실만 쓰세요 (추측은 '~로 보임').
@@ -66,6 +92,10 @@ VISION_SYSTEM = """당신은 한국 퍼포먼스 광고(숏폼) 영상 분석 �
 - dialogue: STT 대사를 기본으로 사용. 화면에 같은 문장이 보이면 그것과 비교해 명백한 오인식(맞춤법·고유명사)만 고친다.
   STT 대사는 한 줄에 한 문장이다. 줄 수와 순서를 그대로 유지하고(줄바꿈 \\n), 각 문장은 . ? ! 로 끝낸다.
   절대 문장을 요약·합치기·나누기·다른 구간으로 옮기지 말 것. STT 대사가 비어 있으면 빈 문자열.
+- cuts: 구간 안의 컷마다 (n = 주어진 컷 번호 그대로) description을 쓴다. 한국어 2~3문장으로
+  샷 크기, 카메라 앵글·거리, 피사체와 화면 속 위치·비중, 인물의 동작·제스처·시선, 배경 종류와 배치, 제품 노출 방식을
+  그 컷 프레임에 보이는 그대로 구체적으로. 앞 컷과 무엇이 달라졌는지(샷 크기·앵글·피사체)가 드러나게 쓴다.
+  '앞 장면에서 이어지는 샷'으로 표시된 컷은 앞 구간 마지막 컷과 같은 샷이 계속되는 부분이다 (보이는 변화만 적는다).
 - shot_type: 샷 크기.
 - role: 광고 구성상 이 구간의 역할."""
 
@@ -96,6 +126,7 @@ def _vision_schema() -> dict:
         "dialogue": {"type": "string"},
         "shot_type": {"type": "string", "enum": SHOT_TYPES},
         "role": {"type": "string", "enum": list(ROLES)},
+        "cuts": {"type": "array", "items": strict_object({"n": {"type": "integer"}, "description": {"type": "string"}})},
     })
     return strict_object({"segments": {"type": "array", "items": item}})
 
@@ -134,10 +165,13 @@ def _analyze_batch(project_id: str, batch: list[Segment], transcript: str) -> No
     for seg in batch:
         content.append({
             "type": "text",
-            "text": f"[구간 index={seg.index}] {fmt_time(seg.start)}–{fmt_time(seg.end)}\nSTT 대사: {seg.dialogue or '(없음)'}",
+            "text": f"[구간 index={seg.index}] {fmt_time(seg.start)}–{fmt_time(seg.end)} · 컷 {len(seg.cuts)}개\n"
+                    f"STT 대사: {seg.dialogue or '(없음)'}",
         })
-        for frame in seg.frames[:3]:
-            content.append(claude_client.image_block(ref_dir / frame))
+        for n, cut in _shown_cuts(seg):
+            note = " (앞 장면에서 이어지는 샷)" if cut.cont else ""
+            content.append({"type": "text", "text": f"  컷 {n}: {cut.start:.1f}–{cut.end:.1f}초{note}"})
+            content.append(claude_client.image_block(ref_dir / Path(cut.frame).relative_to("reference")))
     content.append({"type": "text", "text": f"위 {len(batch)}개 구간을 모두 분석하세요. index는 그대로 유지하세요."})
 
     result = claude_client.json_call(VISION_SYSTEM, [{"role": "user", "content": content}], _vision_schema())
@@ -150,6 +184,9 @@ def _analyze_batch(project_id: str, batch: list[Segment], transcript: str) -> No
         seg.detail = SceneDetail.model_validate(r["detail"])
         seg.shot_type = r["shot_type"]
         seg.role = r["role"]
+        descs = {c["n"]: c["description"] for c in r.get("cuts", [])}
+        for n, cut in enumerate(seg.cuts, 1):
+            cut.description = descs.get(n, "")
         # 교정본의 문장 수가 원본과 같을 때만 받아들인다 (문장 단위 보존)
         fixed = [line.strip() for line in r["dialogue"].splitlines() if line.strip()]
         if seg.dialogue and len(fixed) == len(seg.dialogue.splitlines()):
@@ -168,6 +205,31 @@ def _analyze_overall(segments: list[Segment]) -> Overall:
         _overall_schema(),
     )
     return Overall.model_validate(result)
+
+
+def _shown_cuts(seg: Segment) -> list[tuple[int, RefCut]]:
+    """Claude에게 보여 줄 컷 (번호는 1부터). 너무 많으면 고르게 골라 MAX_CUT_FRAMES장까지."""
+    numbered = list(enumerate(seg.cuts, 1))
+    if len(numbered) <= MAX_CUT_FRAMES:
+        return numbered
+    step = (len(numbered) - 1) / (MAX_CUT_FRAMES - 1)
+    return [numbered[round(i * step)] for i in range(MAX_CUT_FRAMES)]
+
+
+def _add_cuts(src: Path, ref_dir: Path, segments: list[Segment], cut_times: list[float]) -> None:
+    """구간마다 컷(화면 전환 기준)을 나누고 컷별 대표 프레임을 뽑는다.
+
+    구간 첫 컷이 앞 구간 마지막 컷과 같은 샷이면(경계에서 화면이 안 바뀜) cont로 표시한다
+    → 영상 제작 단계에서 이미지·영상을 새로 만들지 않고 앞 컷을 이어 쓴다.
+    """
+    jobs = []
+    for i, seg in enumerate(segments):
+        seg.cuts = []
+        for k, (a, b, split) in enumerate(video_ingest.plan_cuts(seg.start, seg.end, cut_times)):
+            cont = k == 0 and i > 0 and not video_ingest.has_cut_at(seg.start, cut_times)
+            seg.cuts.append(RefCut(start=a, end=b, split=split, cont=cont, frame=f"reference/frames/cut_{seg.index:04d}_{k}.jpg"))
+            jobs.append((seg.index, k, a + (b - a) / 2))
+    video_ingest.extract_cut_frames(src, ref_dir / "frames", jobs)
 
 
 # ── 파이프라인 ─────────────────────────────────────────────
@@ -196,16 +258,23 @@ def run_analysis(project_id: str) -> None:
             utterances = transcribe.get_engine().transcribe(audio)
             store.write_json(ref_dir / "transcript.json", [u.__dict__ for u in utterances])
 
-        # 2초 구간에 문장 배정 → 완전히 같은 대사 구간만 병합 → 각 문장은 한 구간에만 남김
+        _set_job(project_id, "running", 0.4, "화면 전환(컷) 감지 중")
+        cut_times = video_ingest.detect_cuts(src)
+
+        # 1초 구간에 문장 배정 → 같은 대사 / 같은 장면(대사 없음·화면 그대로) 구간 병합 → 각 문장은 한 구간에만 남김
         segments = [
             Segment(index=i, start=s, end=e, frames=[p.relative_to(ref_dir).as_posix()])
             for i, ((s, e), p) in enumerate(zip(bounds, frame_paths))
         ]
         ids = transcribe.assign_to_segments(utterances, bounds)
-        segments, ids = merge_identical_dialogue(segments, ids)
+        segments, ids = merge_identical_dialogue(segments, ids, cut_times)
         ids = transcribe.keep_single_owner(utterances, [(s.start, s.end) for s in segments], ids)
         for seg, seg_ids in zip(segments, ids):
             seg.dialogue = "\n".join(utterances[u].text for u in seg_ids)  # 한 줄 = 한 문장
+        segments = merge_silent_same_shot(segments, cut_times)
+
+        _set_job(project_id, "running", 0.45, "컷별 프레임 추출 중")
+        _add_cuts(src, ref_dir, segments, cut_times)
 
         source = SourceInfo(
             file=src.name,

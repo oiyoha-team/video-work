@@ -1,4 +1,7 @@
-"""②-A 비주얼 파이프라인: 장면 설계 → 기준 장면(첫 장면) → 나머지 장면 → (사람이 승인) → 장면 클립.
+"""②-A 비주얼 파이프라인: 컷 계획 → 컷 설계 → 기준 컷(첫 컷) → 나머지 컷 → (사람이 승인) → 컷 클립.
+
+이미지·영상은 '컷' 단위다. 장면(대사 단위) 하나에 컷이 여러 개 있을 수 있다 (cuts.py — 레퍼런스 화면 전환 기준, 최대 2초).
+함수 인자의 scene_id / scene_ids는 모두 컷 id다 (예전 프로젝트는 컷 id = 장면 id).
 
 1. 장면 설계 (briefs.py): 레퍼런스의 그림체·페르소나·컨셉·후킹·전개 구성만 빌려 새 장면을 설계한다.
 2. 기준 장면: 첫 장면을 레퍼런스 그림체 견본 + 제품 사진으로 먼저 만든다 (레퍼런스 장면을 그대로 넘기지 않음).
@@ -18,8 +21,9 @@ from planning import store
 from schemas import JobState, Script, VisualAsset, VisualTrack, VisualVersion
 
 from . import catalog
-from .briefs import (ROLE_OTHER, ROLE_PACKAGING, build_briefs, product_image_entries, reference_for, revise_image_prompt,
-                     revise_video_prompt, style_frames)
+from . import cuts as cut_plan
+from .briefs import (ROLE_OTHER, ROLE_PACKAGING, build_briefs, design_cut, product_image_entries, reference_for,
+                     revise_image_prompt, revise_video_prompt, style_frames)
 from .engine import HiggsfieldEngine, SceneContext, get_engine, portrait_prompt
 
 PARALLEL = 3  # 동시에 생성할 장면 수 (힉스필드 계정 동시 처리 한도 안에서)
@@ -47,16 +51,42 @@ def video_model(project_id: str) -> str:
 
 
 def anchor_id(project_id: str, script: Script | None = None) -> str:
+    """기준 컷 = 영상의 첫 컷."""
     script = script or store.get_script(project_id)
-    return store.get_production(project_id).visual.anchor_scene or (script.scenes[0].id if script and script.scenes else "")
+    if not script or not script.scenes:
+        return ""
+    order = cut_plan.ordered(project_id, script)
+    return order[0] if order else script.scenes[0].id
+
+
+def all_cut_ids(project_id: str, script: Script | None = None) -> list[str]:
+    """이미지·영상을 만드는 컷 (앞 장면 컷을 이어 쓰는 컷은 빼고 대표 컷만)."""
+    return cut_plan.owners(project_id, script)
+
+
+def _to_owners(project_id: str, ids: list[str]) -> list[str]:
+    """고른 컷 중 이어 쓰는 컷은 대표 컷으로 바꾼다 (중복 제거, 순서 유지)."""
+    out: list[str] = []
+    for cid in ids:
+        o = cut_plan.owner_of(project_id, cid)
+        if o not in out:
+            out.append(o)
+    return out
 
 
 def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
     pdir = store.project_dir(project_id)
-    scene = next(s for s in script.scenes if s.id == scene_id)
-    ref = reference_for(project_id, scene.ref_segment)
     visual = store.get_production(project_id).visual
     asset = visual.scenes.get(scene_id) or VisualAsset()
+    sid = asset.scene_id or scene_id
+    scene = next(s for s in script.scenes if s.id == sid)
+    ref = reference_for(project_id, scene.ref_segment)
+    # 영상 길이 = 이 컷 + 이 컷을 이어 쓰는 뒤 컷들 (한 샷 전체)
+    cut_len = cut_plan.shot_len(project_id, scene_id) if asset.end > asset.start else scene.end - scene.start
+    if asset.ref_frame and (pdir / asset.ref_frame).exists():
+        ref_frame = pdir / asset.ref_frame
+    else:
+        ref_frame = pdir / ref["frames"][0] if ref and ref["frames"] else None
     roles = visual.product_roles
     products = [(path, roles.get(rel) or (ROLE_PACKAGING if rel.startswith("cutout/") else ROLE_OTHER))
                 for rel, path in product_image_entries(project_id)]
@@ -66,7 +96,7 @@ def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
     return SceneContext(
         scene=scene,
         aspect=script.meta.aspect_ratio,
-        ref_frame=pdir / ref["frames"][0] if ref and ref["frames"] else None,  # 임시 엔진 전용
+        ref_frame=ref_frame,  # 이 컷의 레퍼런스 컷 (구도 참고 · 임시 엔진은 그대로 사용)
         products=products,
         prompt=asset.prompt,
         motion=asset.motion,
@@ -82,6 +112,7 @@ def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
         anchor_image=anchor_image,
         video_prompt=asset.video_prompt,
         ref_follow=visual.ref_follow or "medium",
+        duration=cut_len,
     )
 
 
@@ -119,7 +150,7 @@ def save_briefs(project_id: str, only_missing: bool = False) -> None:
     """장면 설계. only_missing이면 아직 설계가 없는 장면이 있을 때만 (전체 흐름을 보고 함께 작성)."""
     script = store.get_script(project_id)
     scenes = store.get_production(project_id).visual.scenes
-    if only_missing and all(scenes.get(s.id) and scenes[s.id].prompt for s in script.scenes):
+    if only_missing and all(scenes.get(c) and scenes[c].prompt for c in all_cut_ids(project_id, script)):
         return
     briefs = build_briefs(project_id)
     with store.lock(project_id):
@@ -131,7 +162,7 @@ def save_briefs(project_id: str, only_missing: bool = False) -> None:
         v = prod.visual
         if not (only_missing and v.style_guide):
             v.style_guide, v.world, v.concept_note = briefs.style_guide, briefs.world, briefs.concept_note
-            v.anchor_scene = script.scenes[0].id if script.scenes else ""
+            v.anchor_scene = anchor_id(project_id, script)
         if not (only_missing and v.character):
             if briefs.character != v.character:
                 v.cast_image = None  # 인물 설정이 바뀌면 기준 이미지도 새로 만든다
@@ -195,8 +226,7 @@ def set_approval(project_id: str, scene_ids: list[str] | None, approved: bool) -
 
 def approved_without_video(project_id: str) -> list[str]:
     scenes = store.get_production(project_id).visual.scenes
-    return [s.id for s in store.get_script(project_id).scenes
-            if scenes.get(s.id) and scenes[s.id].image_approved and not scenes[s.id].video]
+    return [c for c in all_cut_ids(project_id) if scenes.get(c) and scenes[c].image_approved and not scenes[c].video]
 
 
 def _delete_unused(project_id: str, old: VisualVersion | VisualAsset | None, keep: VisualAsset | VisualVersion | None) -> None:
@@ -224,8 +254,9 @@ def choose_version(project_id: str, scene_id: str, keep: str) -> None:
             raise ValueError("비교할 이전 결과가 없습니다.")
         if keep == "prev":
             p = a.prev
-            restored = VisualAsset(prompt=p.prompt, motion=p.motion, video_prompt=p.video_prompt, image=p.image, video=p.video,
-                                   has_person=a.has_person, image_approved=p.image_approved, instruction=p.instruction, v=_ms())
+            restored = a.model_copy(update=dict(prompt=p.prompt, motion=p.motion, video_prompt=p.video_prompt, image=p.image,
+                                                video=p.video, image_approved=p.image_approved, instruction=p.instruction,
+                                                prev=None, error="", v=_ms()))
             _delete_unused(project_id, a, restored)
             prod.visual.scenes[scene_id] = restored
         elif keep == "new":
@@ -255,6 +286,11 @@ def _dialogue(script: Script, scene_id: str) -> str:
     return next((s.dialogue for s in script.scenes if s.id == scene_id), "")
 
 
+def _cut_dialogue(project_id: str, script: Script, cut_id: str) -> str:
+    cut = store.get_production(project_id).visual.scenes.get(cut_id)
+    return _dialogue(script, (cut.scene_id if cut and cut.scene_id else cut_id))
+
+
 def make_image(project_id: str, scene_id: str, instruction: str = "") -> None:
     script = store.get_script(project_id)
     engine = get_engine()
@@ -262,9 +298,22 @@ def make_image(project_id: str, scene_id: str, instruction: str = "") -> None:
     try:
         current = store.get_production(project_id).visual.scenes.get(scene_id) or VisualAsset()
         prompt = current.prompt
-        if instruction:
+        if not prompt or (current.added and not current.image and instruction):
+            # 직접 추가한 컷: 적은 내용과 앞뒤 컷을 보고 프롬프트를 새로 설계한다
             t = timings.Timer()
-            prompt = revise_image_prompt(prompt, instruction, _dialogue(script, scene_id))
+            d = design_cut(project_id, scene_id, instruction)
+            timings.record("revise", t.seconds)
+            prompt = d.get("prompt") or prompt
+            with store.lock(project_id):
+                prod = store.get_production(project_id)
+                c = prod.visual.scenes[scene_id]
+                c.prompt, c.motion, c.has_person = prompt, d.get("motion") or c.motion, d.get("has_person", c.has_person)
+                if instruction:
+                    c.note = instruction
+                store.save_production(project_id, prod)
+        elif instruction:
+            t = timings.Timer()
+            prompt = revise_image_prompt(prompt, instruction, _cut_dialogue(project_id, script, scene_id))
             timings.record("revise", t.seconds)
         ctx = _context(project_id, script, scene_id)
         ctx.prompt = prompt
@@ -283,8 +332,9 @@ def make_image(project_id: str, scene_id: str, instruction: str = "") -> None:
     with store.lock(project_id):
         prod = store.get_production(project_id)
         old = prod.visual.scenes.get(scene_id) or VisualAsset()
-        new = VisualAsset(prompt=prompt, motion=old.motion, video_prompt=old.video_prompt, has_person=old.has_person,
-                          image=rel, instruction=instruction, v=_ms())
+        # 컷 정보(장면·시간·레퍼런스 컷·추가 여부)는 그대로 두고 결과만 바꾼다
+        new = old.model_copy(update=dict(prompt=prompt, image=rel, video=None, image_approved=False, instruction=instruction,
+                                         error="", prev=None, busy="", busy_since=0, v=_ms()))
         if old.image:  # 다시 만든 경우: 이전 결과를 남겨 비교하게 한다 (그 전의 비교 대상은 지움)
             _delete_unused(project_id, old.prev, old)
             new.prev = _snapshot(old)
@@ -309,7 +359,7 @@ def make_video(project_id: str, scene_id: str, instruction: str = "") -> None:
         if instruction:
             t = timings.Timer()
             vprompt = revise_video_prompt(asset.video_prompt or f"Camera: {asset.motion or 'slow push-in'}.", instruction,
-                                          _dialogue(script, scene_id))
+                                          _cut_dialogue(project_id, script, scene_id))
             timings.record("revise", t.seconds)
         ctx = _context(project_id, script, scene_id)
         ctx.video_prompt = vprompt
@@ -372,29 +422,30 @@ def _finish(project_id: str, label: str, scene_ids: list[str], what: str, starte
 
 
 def run_images(project_id: str, scene_ids: list[str] | None = None, instruction: str = "") -> None:
-    """scene_ids가 없으면 전체(장면 설계부터 새로), 있으면 그 장면만 다시 만든다(설계 유지, 수정 지시 반영)."""
+    """scene_ids(컷 id)가 없으면 전체(컷 계획·설계부터 새로), 있으면 그 컷만 다시 만든다(설계 유지, 수정 지시 반영)."""
     script = store.get_script(project_id)
-    ids = scene_ids or [s.id for s in script.scenes]
     full = not scene_ids
+    cut_plan.ensure(project_id, rebuild=full)  # 전체 새로 만들 때 예전(장면당 1컷) 계획은 레퍼런스 컷 기준으로 다시 짠다
+    ids = _to_owners(project_id, scene_ids) if scene_ids else all_cut_ids(project_id, script)
     started = time.time()
     model = image_model(project_id)
     _set_busy(project_id, ids, "queued")
     try:
         scenes = store.get_production(project_id).visual.scenes
-        need_briefs = full or not all(scenes.get(s.id) and scenes[s.id].prompt for s in script.scenes)
+        need_briefs = full or not all(scenes.get(c) and (scenes[c].prompt or scenes[c].added) for c in all_cut_ids(project_id, script))
         anchor_first = anchor_id(project_id, script) in ids or full
         rest_eta = timings.remaining("image", len(ids) - (1 if anchor_first else 0), PARALLEL, model)
         anchor_eta = timings.remaining("image", 1 if anchor_first else 0, 1, model)
         if need_briefs:
             b = timings.remaining("briefs", 1)
-            _job(project_id, "장면 설계 중 — 레퍼런스의 그림체·후킹·구성을 빌려 새 장면을 짜고 있습니다", started,
+            _job(project_id, f"컷 설계 중 — 레퍼런스의 그림체·후킹·컷 구성을 빌려 {len(ids)}개 컷을 짜고 있습니다", started,
                  (b[0] + anchor_eta[0] + rest_eta[0], b[1] + anchor_eta[1] + rest_eta[1]))
             t = timings.Timer()
             save_briefs(project_id, only_missing=not full)
             timings.record("briefs", t.seconds)
         anchor = anchor_id(project_id, script)
         if anchor in ids:
-            _job(project_id, "기준 장면(첫 장면) 만드는 중 — 나머지 장면이 이 장면의 그림체·인물·분위기를 따릅니다", started,
+            _job(project_id, "기준 컷(첫 컷) 만드는 중 — 나머지 컷이 이 컷의 그림체·인물·분위기를 따릅니다", started,
                  (anchor_eta[0] + rest_eta[0], anchor_eta[1] + rest_eta[1]), 0, len(ids))
             make_image(project_id, anchor, instruction)
         rest = [sid for sid in ids if sid != anchor]
@@ -406,7 +457,7 @@ def run_images(project_id: str, scene_ids: list[str] | None = None, instruction:
             _job(project_id, "인물 기준 이미지 만드는 중 — 기준 장면의 그림체로 새 인물을 만듭니다", started,
                  (p[0] + rest_eta[0], p[1] + rest_eta[1]))
             make_cast(project_id)
-        _run_parallel(project_id, "장면 이미지 생성", lambda pid, sid: make_image(pid, sid, instruction), rest, "image", model,
+        _run_parallel(project_id, "컷 이미지 생성", lambda pid, sid: make_image(pid, sid, instruction), rest, "image", model,
                       started)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
@@ -414,22 +465,22 @@ def run_images(project_id: str, scene_ids: list[str] | None = None, instruction:
         return
     finally:
         _set_busy(project_id, ids, "", only_if="queued")
-    _finish(project_id, "장면 이미지 생성", ids, "image", started)
+    _finish(project_id, "컷 이미지 생성", ids, "image", started)
     if full:
         prod = store.get_production(project_id)
         ok = sum(1 for sid in ids if prod.visual.scenes.get(sid) and prod.visual.scenes[sid].image)
-        gates.open_gate(project_id, "images", f"장면 이미지 {ok}/{len(ids)}장 생성 · 전체 승인하면 영상화를 시작합니다 · 엔진: {prod.visual.engine}")
+        gates.open_gate(project_id, "images", f"컷 이미지 {ok}/{len(ids)}장 생성 · 전체 승인하면 영상화를 시작합니다 · 엔진: {prod.visual.engine}")
 
 
 def run_videos(project_id: str, scene_ids: list[str] | None = None, instruction: str = "") -> None:
     """scene_ids가 없으면 '승인됐지만 아직 영상이 없는 장면'을 영상화한다."""
     from workflow import maybe_open_production_gate  # 순환 import 방지
 
-    ids = scene_ids or approved_without_video(project_id)
+    ids = _to_owners(project_id, scene_ids) if scene_ids else approved_without_video(project_id)
     started = time.time()
     _set_busy(project_id, ids, "queued")
     try:
-        _run_parallel(project_id, "장면 영상화", lambda pid, sid: make_video(pid, sid, instruction), ids, "video",
+        _run_parallel(project_id, "컷 영상화", lambda pid, sid: make_video(pid, sid, instruction), ids, "video",
                       video_model(project_id), started)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
@@ -437,7 +488,7 @@ def run_videos(project_id: str, scene_ids: list[str] | None = None, instruction:
         return
     finally:
         _set_busy(project_id, ids, "", only_if="queued")
-    _finish(project_id, "장면 영상화", ids, "video", started)
+    _finish(project_id, "컷 영상화", ids, "video", started)
     maybe_open_production_gate(project_id)
 
 

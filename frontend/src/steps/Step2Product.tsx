@@ -6,6 +6,7 @@ import type { LibraryItem, Product, ProductImage, Project } from "../types";
 
 interface Props {
   project: Project;
+  onRefresh?: () => Promise<Project | null>;
   onNext: (p: Project) => void;
 }
 
@@ -70,7 +71,7 @@ function download(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function Step2Product({ project, onNext }: Props) {
+export default function Step2Product({ project, onRefresh, onNext }: Props) {
   const [product, setProduct] = useState<Product | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [selected, setSelected] = useState("");
@@ -267,6 +268,24 @@ export default function Step2Product({ project, onNext }: Props) {
       {notice && <div className="alert ok">{notice}</div>}
 
       <section className="card toolbar-card">
+        <div className="toolbar-group push-right">
+          <button
+            className="btn small ghost danger"
+            disabled={!!busy}
+            onClick={() =>
+              run("초기화 중", async () => {
+                if (!confirm("이 프로젝트의 제품 정보와 제품 사진을 모두 지우고 빈 칸에서 다시 시작합니다.\n저장해 둔 제품 템플릿은 지워지지 않습니다.\n\n초기화할까요?")) return;
+                await api.resetStep(project.id, 2);
+                setProduct(await api.getProduct(project.id));
+                setSelected("");
+                setDirty(false);
+                await onRefresh?.();
+              })
+            }
+          >
+            2단계 초기화
+          </button>
+        </div>
         <div className="toolbar-group">
           <span className="label">제품 템플릿</span>
           <select value={selected} onChange={(e) => setSelected(e.target.value)}>

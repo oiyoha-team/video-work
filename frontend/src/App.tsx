@@ -343,7 +343,7 @@ export default function App() {
             <GateBanner gates={stepGates} onResolve={resolveGate} />
             <div key={`${view}-${reloadKey}`}>
               {view === 1 && <Step1Reference project={project} status={status} onRefresh={refreshProject} onNext={(p) => advance(p, 2)} />}
-              {view === 2 && <Step2Product project={project} onNext={(p) => advance(p, 3)} />}
+              {view === 2 && <Step2Product project={project} onRefresh={refreshProject} onNext={(p) => advance(p, 3)} />}
               {view === 3 && <Step3Script project={project} status={status} onRefresh={refreshProject} onNext={(p) => advance(p, 4)} />}
               {view === 4 && <Step4Export project={project} onBack={() => setView(3)} onNext={(p) => advance(p, 5)} />}
               {view === 5 && <Step5Production project={project} status={status} onRefresh={refreshProject} onNext={(p) => advance(p, 6)} />}

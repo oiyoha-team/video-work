@@ -140,6 +140,7 @@ def save_scene_analysis(project_id: str, analysis: ReferenceAnalysis) -> None:
                 "shot_type": s.shot_type,
                 "scene": s.scene,
                 "detail": s.detail.model_dump(),
+                "cuts": [c.model_dump() for c in s.cuts],  # 구간 안의 컷 (화면 전환 기준, 최대 2초)
             }
             for s in analysis.segments
         ],

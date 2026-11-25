@@ -613,7 +613,8 @@ a.btn { text-decoration: none; color: var(--text); }
   .track-parallel { display: none; }
   .prod-row { grid-template-columns: 80px 1fr 1fr; }
   .prod-row > :nth-child(2) { grid-column: span 2; }
-  .prod-row > :nth-child(5) { grid-column: 1 / -1; }
+  .prod-row > .audio-cell { grid-column: 1 / -1; }
+  .prod-table .prod-row > .cuts-cell { grid-column: 2 / -1; }
   .prod-head { display: none; }
   .export-grid { grid-template-columns: 1fr; }
 }
@@ -824,3 +825,39 @@ a.btn { text-decoration: none; color: var(--text); }
 .modal { max-width: 480px; width: 100%; display: flex; flex-direction: column; gap: 10px; }
 .tip-steps { margin: 6px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
 .prod-row > .row-panel .regen-form { max-width: 760px; }
+
+/* ── 장면 안의 컷 (이미지·영상은 컷 단위) ── */
+.prod-row > .cuts-cell { grid-column: span 2; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cut-block { display: flex; flex-direction: column; gap: 4px; }
+.cut-head { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.cut-head .chip { font-size: 10px; padding: 0 5px; }
+.cut-head .icon-btn { padding: 0 6px; font-size: 14px; }
+.cut-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.cut-row .regen-btn { margin-top: 4px; }
+.add-cut {
+  width: 100%; padding: 2px 0; margin: 4px 0; font-size: 11px; color: var(--muted); background: none; cursor: pointer;
+  border: 1px dashed var(--border); border-radius: 6px;
+}
+.add-cut:hover:not(:disabled) { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
+.add-cut:disabled { opacity: 0.4; cursor: not-allowed; }
+.ref-desc { opacity: 0.8; margin-top: 2px; }
+.prod-text .brief + .brief { margin-top: 6px; }
+
+/* ── 3단계 장면 추가·삭제 ── */
+.add-scene {
+  width: 100%; padding: 4px 0; font-size: 12px; color: var(--muted); background: none; cursor: pointer;
+  border: 1px dashed var(--border); border-radius: 8px;
+}
+.add-scene:hover:not(:disabled) { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-soft); }
+.add-scene:disabled { opacity: 0.4; cursor: not-allowed; }
+.scene-len input { width: 56px; padding: 2px 4px; }
+.cut-desc-list { margin: 4px 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+
+.cut-row.hidden { display: none; }
+.linked-cut { display: flex; flex-direction: column; gap: 4px; }
+.media-box.linked { opacity: 0.55; border-style: dashed; }
+
+/* ── 단계별 초기화 · 1단계 레퍼런스 관리 막대 ── */
+.ref-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; padding: 12px 18px; }
+.ref-toolbar-url { flex-basis: 100%; }
+.toolbar-group.push-right { order: 99; margin-left: auto; }

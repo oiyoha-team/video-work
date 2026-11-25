@@ -141,12 +141,26 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
     }
   };
 
+  const later = project.step > 1 ? "\n이미 만든 스크립트·영상 결과는 새 분석과 장면이 맞지 않을 수 있습니다 (필요하면 3단계에서 스크립트 초기화)." : "";
   const rerun = () =>
     run("재분석 요청 중", async () => {
-      if (dirty && !confirm("수정한 내용이 재분석 결과로 덮어써집니다. 계속할까요?")) return;
+      if (!confirm(`같은 레퍼런스 영상을 처음부터 다시 분석합니다.${dirty ? "\n수정한 내용은 재분석 결과로 덮어써집니다." : ""}${later}\n\n계속할까요?`)) return;
       await api.rerunAnalysis(project.id);
       await onRefresh();
     });
+  /** 1단계 초기화: 레퍼런스 영상·분석과 그 뒤 스크립트·영상 결과를 지우고 영상 올리기부터 다시 */
+  const resetStep1 = () =>
+    run("초기화 중", async () => {
+      if (!confirm("레퍼런스 영상과 분석 결과를 지우고 영상 올리기부터 다시 시작합니다.\n스크립트(3단계)와 영상 제작(5단계) 결과도 함께 지워집니다. 제품 정보(2단계)는 남습니다.\n\n되돌릴 수 없습니다. 초기화할까요?")) return;
+      await api.resetStep(project.id, 1);
+      setAnalysis(null);
+      setDirty(false);
+      await onRefresh();
+    });
+  const replaceFile = () => {
+    if (project.step > 1 && !confirm(`다른 레퍼런스 영상으로 바꾸고 다시 분석합니다.${later}\n\n계속할까요?`)) return;
+    fileRef.current?.click();
+  };
 
   const next = () =>
     run("저장 중", async () => {
@@ -288,6 +302,30 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
         </div>
       )}
 
+      <section className="card ref-toolbar">
+        <div className="stack-tight">
+          <b>레퍼런스: {source.file}</b>
+          <span className="muted small">
+            {fmtTime(source.duration_sec)} · 구간 {segments.length}개 · 다른 레퍼런스로 바꾸거나 처음부터 다시 분석할 수 있습니다
+          </span>
+        </div>
+        <div className="row wrap">
+          <button className="btn small" disabled={!!busy} onClick={rerun}>
+            ↻ 재분석
+          </button>
+          <button className="btn small" disabled={!!busy} onClick={replaceFile}>
+            다른 영상으로 교체
+          </button>
+          <button className="btn small" disabled={!!busy} onClick={() => setShowUrl(!showUrl)}>
+            링크로 교체
+          </button>
+          <button className="btn small ghost danger" disabled={!!busy} onClick={resetStep1}>
+            1단계 초기화
+          </button>
+        </div>
+        {showUrl && <div className="ref-toolbar-url">{urlRow}</div>}
+      </section>
+
       <div className="ref-layout">
         <aside className="ref-side">
           <video
@@ -319,18 +357,6 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
             </select>
             <small className="muted">제작될 영상 비율: {effectiveRatio}</small>
           </label>
-          <div className="row wrap">
-            <button className="btn small" onClick={() => fileRef.current?.click()}>
-              영상 교체
-            </button>
-            <button className="btn small" onClick={() => setShowUrl(!showUrl)}>
-              링크로 교체
-            </button>
-            <button className="btn small" onClick={rerun}>
-              재분석
-            </button>
-          </div>
-          {showUrl && urlRow}
           <input ref={fileRef} type="file" accept="video/*" hidden onChange={(e) => upload(e.target.files?.[0])} />
         </aside>
 
@@ -355,11 +381,20 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
                     {fmtTime(seg.start)}–{fmtTime(seg.end)}
                   </span>
                   {seg.merged_from.length > 1 && <span className="chip" title="바로 앞뒤 구간의 대사가 완전히 같아 병합됨">동일 대사 병합</span>}
+                  {(seg.cuts?.length ?? 0) > 1 && (
+                    <span className="chip" title="화면 전환(컷)을 감지해 나눴습니다. 영상 제작 단계에서 컷마다 이미지를 따로 만듭니다">
+                      컷 {seg.cuts?.length}개
+                    </span>
+                  )}
                 </div>
                 <div className="seg-frames" onClick={() => seek(seg)}>
-                  {seg.frames.slice(0, 2).map((f) => (
-                    <img key={f} src={`${dataUrl(project.id, "reference", f)}?v=${version}`} alt="" loading="lazy" />
-                  ))}
+                  {seg.cuts?.length
+                    ? seg.cuts.slice(0, 4).map((c) => (
+                        <img key={c.frame} src={`${dataUrl(project.id, c.frame)}?v=${version}`} alt="" loading="lazy" title={`${c.start.toFixed(1)}–${c.end.toFixed(1)}초`} />
+                      ))
+                    : seg.frames.slice(0, 2).map((f) => (
+                        <img key={f} src={`${dataUrl(project.id, "reference", f)}?v=${version}`} alt="" loading="lazy" />
+                      ))}
                 </div>
                 <div className="scene-cell">
                   <AutoTextarea value={seg.scene} onChange={(v) => updateSegment(i, { scene: v })} placeholder="장면 요약" />
@@ -367,6 +402,21 @@ export default function Step1Reference({ project, status, onRefresh, onNext }: P
                     <summary>장면 상세 (이미지 생성 기준)</summary>
                     <SceneDetailEditor detail={seg.detail} onChange={(d) => updateSegment(i, { detail: d })} />
                   </details>
+                  {(seg.cuts?.length ?? 0) > 1 && (
+                    <details className="detail-toggle">
+                      <summary>컷별 화면 ({seg.cuts?.length}개)</summary>
+                      <ol className="cut-desc-list small">
+                        {seg.cuts?.map((c, k) => (
+                          <li key={k}>
+                            <b>
+                              {c.start.toFixed(1)}–{c.end.toFixed(1)}초
+                            </b>
+                            {c.cont && <span className="muted"> (앞 구간에서 이어지는 샷)</span>} {c.description || <span className="muted">-</span>}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
                 </div>
                 <AutoTextarea value={seg.dialogue} onChange={(v) => updateSegment(i, { dialogue: v })} placeholder="(대사 없음)" />
                 <div className="seg-selects">

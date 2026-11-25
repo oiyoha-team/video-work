@@ -126,6 +126,19 @@ def test_flow_reply_parsing():
     assert parse_reply("진행") is None
 
 
+def test_merge_same_shot_silent():
+    """대사 없는 1초 구간은 화면이 안 바뀌면 앞 장면에 합치고, 화면이 바뀌면 새 장면이다."""
+    from schemas import Segment
+
+    def seg(i):
+        return Segment(index=i, start=float(i), end=float(i + 1), frames=[f"frames/{i:04d}.jpg"])
+
+    keys = [[0], [0], [], [], [1], []]
+    cut_times = [4.0, 5.0]  # 4초(새 대사 시작), 5초(대사 없는 구간에서 화면 전환)
+    out, _ = merge_identical_dialogue([seg(i) for i in range(len(keys))], keys, cut_times)
+    assert [(s.start, s.end) for s in out] == [(0, 4), (4, 5), (5, 6)], [(s.start, s.end) for s in out]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

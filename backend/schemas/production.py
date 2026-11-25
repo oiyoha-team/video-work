@@ -15,6 +15,17 @@ class VisualVersion(BaseModel):
 
 
 class VisualAsset(BaseModel):
+    """컷 하나의 이미지·영상. 장면(대사 단위) 하나에 컷이 여러 개 있을 수 있다 (VisualTrack.scene_cuts)."""
+    scene_id: str = ""  # 이 컷이 속한 장면
+    start: float = 0  # 장면 시작 기준 컷 위치 (초)
+    end: float = 0
+    ref_frame: str | None = None  # 대응 레퍼런스 컷 프레임 (구도 참고)
+    ref_desc: str = ""  # 대응 레퍼런스 컷 묘사 (한국어)
+    split: bool = False  # 레퍼런스의 긴 샷을 나눈 컷 (앞 컷과 다른 샷으로 변주)
+    note: str = ""  # 사용자가 직접 추가한 컷의 내용 (한국어)
+    added: bool = False  # 사용자가 직접 추가한 컷
+    # 앞 컷(앞 장면 마지막 컷)과 같은 샷이 이어짐 → 이미지·영상을 새로 만들지 않고 앞 컷 것을 이어 쓴다 (크레딧 절약)
+    link_prev: bool = False
     prompt: str = ""  # 이미지 생성 프롬프트 (영어). 수정 지시를 받으면 Claude가 고쳐 쓴다
     motion: str = ""  # 이미지→영상 변환 시 카메라 움직임
     video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트 (비우면 motion으로 만든다)
@@ -63,9 +74,12 @@ class VisualTrack(BaseModel):
     cast_v: int = 0
     product_scale: str = ""  # 손에 든 사진으로 읽은 제품 실제 크기 (영어)
     product_roles: dict[str, str] = Field(default_factory=dict)  # {제품 사진 경로: in_hand | packaging | other}
+    # 장면별 컷 순서 {scene_id: [cut_id, ...]}. 없는 장면은 [scene_id] 한 컷 (예전 프로젝트 호환)
+    scene_cuts: dict[str, list[str]] = Field(default_factory=dict)
+    cut_plan_version: int = 0  # 0: 예전(장면당 1컷) · 1: 레퍼런스 컷 기준 (장면 안에 여러 컷)
     image_model: str = ""  # 이미지 모델 (비우면 config 기본값). 목록은 visual/catalog.py가 12시간마다 갱신
     video_model: str = ""  # 이미지→영상 모델 (비우면 config 기본값)
-    scenes: dict[str, VisualAsset] = Field(default_factory=dict)
+    scenes: dict[str, VisualAsset] = Field(default_factory=dict)  # {cut_id: 컷} (예전 프로젝트는 cut_id = scene_id)
 
 
 class TTSSettings(BaseModel):
