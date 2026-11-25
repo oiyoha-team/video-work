@@ -741,6 +741,18 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                       <b>제품 크기</b> {prod.visual.product_scale}
                     </>
                   )}
+                  {prod.visual.product_look && (
+                    <>
+                      <br />
+                      <b>제품 외형</b> {prod.visual.product_look}
+                    </>
+                  )}
+                  {prod.visual.product_text.length > 0 && (
+                    <>
+                      <br />
+                      <b>패키지 글씨 (그대로 옮김)</b> {prod.visual.product_text.map((x) => `"${x}"`).join(" · ")}
+                    </>
+                  )}
                 </div>
               </details>
             </details>
@@ -940,6 +952,25 @@ export default function Step5Production({ project, status, onRefresh, onNext }: 
                           </span>
                         )}
                         {va?.added && <span className="chip">추가한 컷</span>}
+                        {!isLinked(cid) && va && (
+                          <button
+                            className={`chip chip-toggle ${va.has_product ? "on" : ""}`}
+                            disabled={vRunning || lock || !!va.busy}
+                            title={
+                              va.has_product
+                                ? "이 컷에 제품이 나옵니다 (누르면 제품 없이). 바꾼 뒤 이미지를 다시 만들면 반영됩니다"
+                                : "이 컷에는 제품이 나오지 않습니다 (누르면 제품 넣기). 바꾼 뒤 이미지를 다시 만들면 반영됩니다"
+                            }
+                            onClick={() => run("product", async () => setProd(await api.setCutProduct(project.id, cid, !va.has_product)))}
+                          >
+                            {va.has_product ? "제품 O" : "제품 X"}
+                          </button>
+                        )}
+                        {cid === prod.visual.product_anchor && (
+                          <span className="chip anchor-chip" title="처음 만든 제품 컷입니다. 이후 제품 컷이 이 이미지의 제품 크기·모양·라벨을 따릅니다">
+                            제품 기준
+                          </span>
+                        )}
                         {isLinked(cid) && (
                           <span className="chip" title="레퍼런스에서 앞 장면의 샷이 그대로 이어지는 부분입니다. 같은 이미지·영상을 이어 써서 크레딧을 아낍니다">
                             앞 컷 이어짐

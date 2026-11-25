@@ -113,7 +113,19 @@ def _context(project_id: str, script: Script, scene_id: str) -> SceneContext:
         video_prompt=asset.video_prompt,
         ref_follow=visual.ref_follow or "medium",
         duration=cut_len,
+        has_product=asset.has_product,
+        product_look=visual.product_look,
+        product_text=list(visual.product_text),
+        product_ref=_product_ref(pdir, visual, scene_id),
     )
+
+
+def _product_ref(pdir, visual, cut_id: str):
+    """앞서 만든 제품 컷 이미지 (이 컷 자신이면 None)."""
+    a = visual.scenes.get(visual.product_anchor) if visual.product_anchor else None
+    if not a or not a.image or visual.product_anchor == cut_id:
+        return None
+    return pdir / a.image
 
 
 # ── 진행 표시 ─────────────────────────────────────────────
@@ -159,6 +171,7 @@ def save_briefs(project_id: str, only_missing: bool = False) -> None:
             a = prod.visual.scenes.setdefault(sid, VisualAsset())
             if not (only_missing and a.prompt):
                 a.prompt, a.motion, a.has_person, a.video_prompt = b["prompt"], b["motion"], b["has_person"], ""
+                a.has_product = b.get("has_product", True)
         v = prod.visual
         if not (only_missing and v.style_guide):
             v.style_guide, v.world, v.concept_note = briefs.style_guide, briefs.world, briefs.concept_note
@@ -169,6 +182,9 @@ def save_briefs(project_id: str, only_missing: bool = False) -> None:
             v.character = briefs.character
         if not (only_missing and v.product_scale):
             v.product_scale, v.product_roles = briefs.product_scale, briefs.product_roles
+        if not (only_missing and v.product_look):
+            v.product_look, v.product_text = briefs.product_look, briefs.product_text
+            v.product_anchor = ""  # 새로 설계하면 제품 기준 컷도 새로 정한다
         store.save_production(project_id, prod)
 
 
@@ -308,6 +324,7 @@ def make_image(project_id: str, scene_id: str, instruction: str = "") -> None:
                 prod = store.get_production(project_id)
                 c = prod.visual.scenes[scene_id]
                 c.prompt, c.motion, c.has_person = prompt, d.get("motion") or c.motion, d.get("has_person", c.has_person)
+                c.has_product = d.get("has_product", c.has_product)
                 if instruction:
                     c.note = instruction
                 store.save_production(project_id, prod)
@@ -340,6 +357,10 @@ def make_image(project_id: str, scene_id: str, instruction: str = "") -> None:
             new.prev = _snapshot(old)
         prod.visual.engine = engine.label
         prod.visual.scenes[scene_id] = new
+        # 처음 만든 제품 컷을 이후 제품 컷의 기준으로 (크기·모양·라벨 일관성)
+        pa = prod.visual.scenes.get(prod.visual.product_anchor)
+        if new.has_product and not (pa and pa.image and pa.has_product):
+            prod.visual.product_anchor = scene_id
         store.save_production(project_id, prod)
     if scene_id == anchor_id(project_id, script):
         _sync_cast_from_anchor(project_id)

@@ -41,6 +41,10 @@ class SceneContext:
     video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트
     ref_follow: str = "medium"  # low면 레퍼런스 컷을 넘기지 않음, medium/high면 구도 참고로 넘김
     duration: float = 0  # 이 컷의 길이 (초). 0이면 장면 길이
+    has_product: bool = True  # 이 컷에 자사 제품이 나오는지
+    product_look: str = ""  # 제품 외형 (영어)
+    product_text: list[str] = field(default_factory=list)  # 패키지 글씨 원문
+    product_ref: Path | None = None  # 앞에서 만든 제품 컷 (크기·모양·라벨 일관성 기준)
 
     @property
     def clip_len(self) -> float:
@@ -161,6 +165,9 @@ _CAST_NOTE = "the CHARACTER of this ad. Keep exactly this character's face, hair
 _HAND_NOTE = "our product held in a real adult hand. It shows the product's TRUE SIZE relative to a hand: keep exactly this scale."
 _PACK_NOTE = "our product packaging. Keep its shape, colors and label design recognizable, rendered in this image's art style."
 _OTHER_NOTE = "another photo of our product, for its look and material."
+_PRODUCT_REF_NOTE = ("an earlier shot of THIS ad that already shows our product. Keep the product exactly as it appears there: "
+                     "the same size relative to hands and face, the same shape, proportions, colors and label layout. "
+                     "Use it only for the product, not for the composition.")
 
 INTEGRATION = (
     "The product must look like it naturally belongs in this image, not composited or pasted on: rendered in the same art style, "
@@ -188,11 +195,15 @@ def _pick_refs(ctx: SceneContext, limit: int) -> list[tuple[Path, str]]:
             refs.append((ctx.cast_image, _CAST_NOTE))
     else:
         refs += [(p, _STYLE_NOTE) for p in ctx.style_frames[:1]]
-    # 컷 다양성: 같은 위치 레퍼런스 장면의 구도(샷 크기·앵글·배치·동작)만 참고
     layout = _LAYOUT_NOTES.get(ctx.ref_follow)
-    if layout and ctx.ref_frame and ctx.ref_frame.exists():
-        refs.append((ctx.ref_frame, layout))
-    refs += [(p, _HAND_NOTE) for p in hand[:1]] + [(p, _PACK_NOTE) for p in pack] + [(p, _OTHER_NOTE) for p in other] + [(p, _HAND_NOTE) for p in hand[1:]]
+    layout_ref = [(ctx.ref_frame, layout)] if layout and ctx.ref_frame and ctx.ref_frame.exists() else []
+    if not ctx.has_product:
+        # 제품이 나오지 않는 컷: 제품 사진을 넘기지 않는다 (넘기면 이미지 AI가 제품을 끼워 넣는다)
+        return (refs + layout_ref)[:limit]
+    # 제품 컷: 크기 기준(손에 든 사진) → 패키지 정면 → 앞서 만든 제품 컷 → 구도 참고 → 나머지 제품 사진
+    product_ref = [(ctx.product_ref, _PRODUCT_REF_NOTE)] if ctx.product_ref and ctx.product_ref.exists() else []
+    refs += [(p, _HAND_NOTE) for p in hand[:1]] + [(p, _PACK_NOTE) for p in pack[:1]] + product_ref + layout_ref
+    refs += [(p, _PACK_NOTE) for p in pack[1:]] + [(p, _OTHER_NOTE) for p in other] + [(p, _HAND_NOTE) for p in hand[1:]]
     return refs[:limit]
 
 
@@ -204,10 +215,30 @@ def scene_prompt(ctx: SceneContext, notes: list[str]) -> str:
     parts.append(ctx.prompt)
     if notes:
         parts.append("Reference images: " + " ".join(f"Image {i} is {n}" for i, n in enumerate(notes, 1)))
-    if ctx.products:
-        parts.append(" ".join(x for x in (ctx.product_scale, "If the product appears, it must keep this real-world size relative to hands and body." if ctx.product_scale else "", INTEGRATION) if x))
+    if ctx.products and ctx.has_product:
+        parts.append(product_block(ctx))
+    elif ctx.products:
+        parts.append("Do NOT show our product, its packaging, pills, sachets or any branded product anywhere in this image.")
     parts.append(NO_TEXT)
     return "\n\n".join(parts)
+
+
+def product_block(ctx: SceneContext) -> str:
+    """제품 컷 공통 지시: 외형 · 글씨 원문 · 실제 크기 · 자연스러운 합성 (모든 제품 컷이 같은 제품으로 보이게)."""
+    lines = ["OUR PRODUCT (must be identical in every shot of this ad):"]
+    if ctx.product_look:
+        lines.append(f"- Appearance: {ctx.product_look}")
+    if ctx.product_text:
+        quoted = "; ".join(f'"{t}"' for t in ctx.product_text)
+        lines.append(f"- Printed text on the packaging, reproduce exactly as written, same spelling, language, line breaks and "
+                     f"position: {quoted}. Do not invent, translate or rearrange any lettering. If a line is too small to "
+                     f"render legibly at this distance, keep it as small faithful print rather than changing it.")
+    lines.append("- Keep the exact shape, proportions, colors, materials and label layout shown in the product photos.")
+    if ctx.product_scale:
+        lines.append(f"- True size: {ctx.product_scale} Keep exactly this real-world size relative to the hands, face and "
+                     "body in this shot — never enlarge or shrink it between shots.")
+    lines.append(f"- {INTEGRATION}")
+    return "\n".join(lines)
 
 
 def video_prompt(ctx: SceneContext) -> str:

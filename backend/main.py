@@ -690,6 +690,23 @@ def add_cut(pid: str, scene_id: str, body: AddCutBody):
     return get_production(pid)
 
 
+class CutProductBody(BaseModel):
+    has_product: bool
+
+
+@app.put("/api/projects/{pid}/visual/cuts/{cut_id}/product")
+def set_cut_product(pid: str, cut_id: str, body: CutProductBody):
+    """이 컷에 제품을 넣을지 직접 정한다 (다음에 이 컷 이미지를 다시 만들 때 반영)."""
+    with store.lock(pid):
+        prod = store.get_production(pid)
+        cut = prod.visual.scenes.get(cut_id)
+        if cut is None:
+            raise ValueError("컷을 찾을 수 없습니다.")
+        cut.has_product = body.has_product
+        store.save_production(pid, prod)
+    return get_production(pid)
+
+
 @app.post("/api/projects/{pid}/visual/cuts/{cut_id}/unlink")
 def unlink_cut(pid: str, cut_id: str):
     """앞 장면 컷을 이어 쓰던 컷을 따로 만드는 컷으로 바꾼다 (이후 [이미지 만들기])."""

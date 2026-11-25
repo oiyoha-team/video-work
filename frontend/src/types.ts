@@ -96,6 +96,7 @@ export interface VisualAsset {
   video_prompt: string;
   image: string | null;
   has_person: boolean;
+  has_product: boolean; // 이 컷에 자사 제품이 나오는지
   image_approved: boolean; // [이미지 전체 승인] 후 영상화
   video: string | null;
   error: string; // 무엇 실패 / 원인: … / 해결: … / [원문] … (줄바꿈으로 구분)
@@ -210,6 +211,9 @@ export interface Production {
     cast_image: string | null; // 인물 기준 이미지
     cast_v: number;
     product_scale: string; // 제품 실제 크기
+    product_look: string; // 제품 외형 (모든 제품 컷 공통)
+    product_text: string[]; // 패키지 글씨 원문
+    product_anchor: string; // 제품 크기·모양 기준 컷
     scenes: Record<string, VisualAsset>;
   };
   sound: { engine: string; voice: string; voice_id: string; settings: TTSSettings; scenes: Record<string, SoundAsset> };

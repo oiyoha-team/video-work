@@ -31,6 +31,7 @@ class VisualAsset(BaseModel):
     video_prompt: str = ""  # 영상 수정 지시를 반영한 영상 프롬프트 (비우면 motion으로 만든다)
     image: str | None = None  # 프로젝트 폴더 기준 상대경로
     has_person: bool = True  # 이 장면에 인물이 나오는지 (인물 기준 이미지를 넣을지)
+    has_product: bool = True  # 이 컷에 자사 제품이 나오는지 (아니면 제품 사진을 넘기지 않고 '제품 넣지 말 것'을 지시)
     image_approved: bool = False  # [이미지 전체 승인] 후에만 영상화한다 (이미지를 다시 만들면 그 장면은 다시 승인 필요)
     video: str | None = None
     error: str = ""
@@ -73,6 +74,9 @@ class VisualTrack(BaseModel):
     cast_image: str | None = None  # 인물 기준 이미지 (첫 장면에 인물이 있으면 그 장면, 없으면 첫 장면 그림체로 만든 인물)
     cast_v: int = 0
     product_scale: str = ""  # 손에 든 사진으로 읽은 제품 실제 크기 (영어)
+    product_look: str = ""  # 제품 외형 묘사 — 모양·비율·색·재질·라벨 배치 (영어, 모든 제품 컷 공통)
+    product_text: list[str] = Field(default_factory=list)  # 패키지에 적힌 글씨 원문 (그대로 옮겨 적게 한다)
+    product_anchor: str = ""  # 처음 만든 제품 컷 → 이후 제품 컷이 이 이미지의 제품 크기·모양·라벨을 따른다
     product_roles: dict[str, str] = Field(default_factory=dict)  # {제품 사진 경로: in_hand | packaging | other}
     # 장면별 컷 순서 {scene_id: [cut_id, ...]}. 없는 장면은 [scene_id] 한 컷 (예전 프로젝트 호환)
     scene_cuts: dict[str, list[str]] = Field(default_factory=dict)

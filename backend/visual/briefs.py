@@ -74,8 +74,21 @@ BRIEF_SYSTEM = """당신은 숏폼 광고의 크리에이티브 디렉터 겸 �
 - product_images: 첨부된 제품 사진마다 번호(n, 1부터)와 역할(role).
   in_hand = 사람 손에 들고 있어 실제 크기를 알 수 있는 사진, packaging = 패키지 정면·누끼, other = 그 밖의 연출.
 
-[제품 합성]
+[제품 등장 — 필요한 컷에만]
+- 각 컷의 has_product: 그 컷의 레퍼런스 컷에 제품(또는 레퍼런스 속 다른 제품)이 보이거나, 그 장면 대사가 제품을 직접 보여 줘야 할 때만 true.
+  후킹·공감·문제 제기·생활 장면처럼 제품이 필요 없는 컷은 false. 영상 전체에서 제품이 불필요하게 자주 나오지 않게 한다.
+- has_product=false인 컷의 prompt에는 제품·패키지·알약·파우치를 절대 쓰지 않는다.
+
+[제품 외형·크기 — 모든 제품 컷이 같은 제품]
+- product_look (영어): 제품 사진을 보고 외형을 아주 구체적으로 — 패키지 종류와 모양, 가로·세로 비율, 색(주조색·보조색),
+  재질(무광/유광·호일), 라벨 배치(로고·제품명·그림의 위치), 내용물(알약 개수·색·모양) 등. 모든 제품 컷에 그대로 쓰인다.
+- product_text: 제품 사진의 패키지에 보이는 글씨를 줄 단위로 원문 그대로 (철자·언어·대소문자 그대로, 번역 금지, 추측 금지).
+  읽을 수 없는 글씨는 넣지 않는다.
+- 제품 컷의 prompt에는 손·얼굴 대비 크기를 product_scale과 같은 기준으로 매번 명시한다 (컷마다 크기가 달라지면 안 된다).
 - 제품의 외형(모양·색·라벨)은 제품 사진을 따르되, 그림체가 애니메이션·일러스트면 그 그림체로 자연스럽게 녹여 그린다.
+  라벨 글씨와 로고는 그림체가 바뀌어도 원문 그대로 유지한다.
+
+[제품 합성]
 - 장면과 같은 조명 방향·색온도·노출, 자연스러운 그림자와 접촉 그림자, 포장재 질감, 손가락이 제품을 실제로 잡는 모습,
   같은 원근·심도를 묘사해 붙여 넣은 티가 나지 않게 한다."""
 
@@ -91,18 +104,20 @@ REVISE_SYSTEM = """당신은 숏폼 광고 이미지·영상 프롬프트를 고
 
 @dataclass
 class Briefs:
-    scenes: dict[str, dict]  # {cut_id: {"prompt", "motion", "has_person"}}
+    scenes: dict[str, dict]  # {cut_id: {"prompt", "motion", "has_person", "has_product"}}
     character: str = ""
     product_scale: str = ""
     product_roles: dict[str, str] = field(default_factory=dict)  # {제품 폴더 기준 경로: 역할}
     style_guide: str = ""
     world: str = ""
     concept_note: str = ""
+    product_look: str = ""
+    product_text: list[str] = field(default_factory=list)
 
 
 def _schema() -> dict:
     cut = strict_object({"cut_id": {"type": "string"}, "prompt": {"type": "string"}, "motion": {"type": "string"},
-                         "has_person": {"type": "boolean"}})
+                         "has_person": {"type": "boolean"}, "has_product": {"type": "boolean"}})
     image = strict_object({"n": {"type": "integer"}, "role": {"type": "string", "enum": [ROLE_HAND, ROLE_PACKAGING, ROLE_OTHER]}})
     return strict_object({
         "style_guide": {"type": "string"},
@@ -110,6 +125,8 @@ def _schema() -> dict:
         "character": {"type": "string"},
         "concept_note": {"type": "string"},
         "product_scale": {"type": "string"},
+        "product_look": {"type": "string"},
+        "product_text": {"type": "array", "items": {"type": "string"}},
         "product_images": {"type": "array", "items": image},
         "cuts": {"type": "array", "items": cut},
     })
@@ -262,13 +279,16 @@ def build_briefs(project_id: str) -> Briefs:
         if 1 <= item["n"] <= len(entries):
             roles[entries[item["n"] - 1][0]] = item["role"]
     return Briefs(
-        scenes={r["cut_id"]: {"prompt": r["prompt"], "motion": r["motion"], "has_person": r["has_person"]} for r in result.get("cuts", [])},
+        scenes={r["cut_id"]: {"prompt": r["prompt"], "motion": r["motion"], "has_person": r["has_person"],
+                              "has_product": r.get("has_product", True)} for r in result.get("cuts", [])},
         character=result.get("character", "").strip(),
         product_scale=result.get("product_scale", "").strip(),
         product_roles=roles,
         style_guide=result.get("style_guide", "").strip(),
         world=result.get("world", "").strip(),
         concept_note=result.get("concept_note", "").strip(),
+        product_look=result.get("product_look", "").strip(),
+        product_text=[x.strip() for x in result.get("product_text", []) if x.strip()],
     )
 
 
@@ -277,7 +297,8 @@ CUT_SYSTEM = """당신은 숏폼 광고의 컷을 설계하는 아트 디렉터�
 이 컷 하나의 이미지 프롬프트(영어)와 카메라 움직임(motion, 영어 짧은 구)을 쓰세요.
 - 사용자가 적은 내용을 정확히 그 컷의 장면으로 만든다. 내용이 없으면 앞뒤 컷 사이를 자연스럽게 잇는 컷.
 - 앞 컷·뒤 컷과 구도가 같으면 안 된다 (샷 크기나 앵글, 피사체 중 하나는 분명히 다르게).
-- prompt는 샷 크기와 카메라 앵글로 시작한다. 인물이 나오면 character를 같은 말로 묘사한다. 글자·자막·로고는 넣지 않는다."""
+- prompt는 샷 크기와 카메라 앵글로 시작한다. 인물이 나오면 character를 같은 말로 묘사한다. 글자·자막·로고는 넣지 않는다.
+- has_product: 이 컷에 자사 제품이 꼭 나와야 할 때만 true. 제품이 나오면 product_look 외형과 제품 크기 기준을 그대로 따른다."""
 
 
 def design_cut(project_id: str, cut_id: str, note: str = "") -> dict:
@@ -295,10 +316,11 @@ def design_cut(project_id: str, cut_id: str, note: str = "") -> dict:
     dialogue = next((s.dialogue for s in script.scenes if s.id == cut.scene_id), "")
     want = note or cut.note
     if not claude_client.is_configured():
-        return {"prompt": f"{want or prev_p}", "motion": "slow push-in", "has_person": cut.has_person}
-    schema = strict_object({"prompt": {"type": "string"}, "motion": {"type": "string"}, "has_person": {"type": "boolean"}})
+        return {"prompt": f"{want or prev_p}", "motion": "slow push-in", "has_person": cut.has_person, "has_product": cut.has_product}
+    schema = strict_object({"prompt": {"type": "string"}, "motion": {"type": "string"}, "has_person": {"type": "boolean"},
+                            "has_product": {"type": "boolean"}})
     text = (f"style_guide: {v.style_guide or '-'}\nworld: {v.world or '-'}\ncharacter: {v.character or '(인물 없음)'}\n"
-            f"제품 크기: {v.product_scale or '-'}\n\n장면 대사: {dialogue or '(없음)'}\n"
+            f"제품 외형: {v.product_look or '-'}\n제품 크기: {v.product_scale or '-'}\n\n장면 대사: {dialogue or '(없음)'}\n"
             f"앞 컷 프롬프트: {prev_p or '(없음)'}\n뒤 컷 프롬프트: {next_p or '(없음)'}\n"
             f"레퍼런스 컷 참고: {cut.ref_desc or '-'}\n\n원하는 컷 내용: {want or '(없음 — 앞뒤를 잇는 컷)'}")
     return claude_client.json_call(CUT_SYSTEM, [{"role": "user", "content": text}], schema)

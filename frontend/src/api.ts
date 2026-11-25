@@ -128,6 +128,8 @@ export const api = {
   regenerateCast: (pid: string) => request("POST", `${P(pid)}/visual/cast`),
   addCut: (pid: string, sceneId: string, after: string | null, note: string) =>
     request<Production>("POST", `${P(pid)}/visual/scenes/${sceneId}/cuts`, { after, note }),
+  setCutProduct: (pid: string, cutId: string, has_product: boolean) =>
+    request<Production>("PUT", `${P(pid)}/visual/cuts/${cutId}/product`, { has_product }),
   unlinkCut: (pid: string, cutId: string) => request<Production>("POST", `${P(pid)}/visual/cuts/${cutId}/unlink`),
   deleteCut: (pid: string, cutId: string) => request<Production>("DELETE", `${P(pid)}/visual/cuts/${cutId}`),
   chooseVersion: (pid: string, sceneId: string, keep: "new" | "prev") =>
